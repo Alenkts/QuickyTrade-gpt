@@ -1,0 +1,447 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		20179B55099EABA21D276C1F /* CompanionTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C455CCE01F99895F29F96E5B /* CompanionTransport.swift */; };
+		325F3578031E8485A0EB0D70 /* QuickyTradeIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55CB0B7F1A2003FD9FA56E76 /* QuickyTradeIOSApp.swift */; };
+		3D99342941439AC910ADAB71 /* MacDeskModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A063AEEA7767B85D7F1CD8 /* MacDeskModel.swift */; };
+		69436E8B8CB4F5F92D11C74D /* PhoneDeskModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BE0DAE863DA85E2D718596A /* PhoneDeskModel.swift */; };
+		804920D6B450D98077B973F4 /* PhoneRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A86F62D1E94A1B7372297554 /* PhoneRootView.swift */; };
+		8754A151AEE6111214E4B5C9 /* QuickyTradeMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 670B5CDE711BD7146DDF974C /* QuickyTradeMacApp.swift */; };
+		91349CBC7BEBFD79172E9E7C /* ib_gateway_bridge.py in Resources */ = {isa = PBXBuildFile; fileRef = AA75CEEA63A85030D9ABF6D4 /* ib_gateway_bridge.py */; };
+		9414B03D1F47CFCCE36965C3 /* TradingModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5CFA2237B73E63B8B820B59 /* TradingModels.swift */; };
+		967B4841622CE283B34E7150 /* MacDeskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CC8D4DAD415C8CFA525B106 /* MacDeskView.swift */; };
+		C0E1A58613F2C80DBD84E191 /* CompanionTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C455CCE01F99895F29F96E5B /* CompanionTransport.swift */; };
+		FF6B52CBB6701E51C9D101A6 /* TradingModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5CFA2237B73E63B8B820B59 /* TradingModels.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		55CB0B7F1A2003FD9FA56E76 /* QuickyTradeIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickyTradeIOSApp.swift; sourceTree = "<group>"; };
+		5EAB2FFA523BCA37EDE95A76 /* QuickyTradeMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = QuickyTradeMac.app; path = QuickyTrade.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		670B5CDE711BD7146DDF974C /* QuickyTradeMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickyTradeMacApp.swift; sourceTree = "<group>"; };
+		6BE0DAE863DA85E2D718596A /* PhoneDeskModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneDeskModel.swift; sourceTree = "<group>"; };
+		942919D0E1A68176AC1C0382 /* QuickyTrade Companion.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "QuickyTrade Companion.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		9CC8D4DAD415C8CFA525B106 /* MacDeskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacDeskView.swift; sourceTree = "<group>"; };
+		A86F62D1E94A1B7372297554 /* PhoneRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRootView.swift; sourceTree = "<group>"; };
+		AA75CEEA63A85030D9ABF6D4 /* ib_gateway_bridge.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = ib_gateway_bridge.py; sourceTree = "<group>"; };
+		BA57E7543C3505D82CFEBD7F /* QuickyTradeIOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = QuickyTradeIOS.entitlements; sourceTree = "<group>"; };
+		C455CCE01F99895F29F96E5B /* CompanionTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionTransport.swift; sourceTree = "<group>"; };
+		C6B04001AEF453488F0C85D3 /* QuickyTradeMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = QuickyTradeMac.entitlements; sourceTree = "<group>"; };
+		D5CFA2237B73E63B8B820B59 /* TradingModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TradingModels.swift; sourceTree = "<group>"; };
+		D9A063AEEA7767B85D7F1CD8 /* MacDeskModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacDeskModel.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		1859F8B8441FE1F536F3F97C = {
+			isa = PBXGroup;
+			children = (
+				97DA73B1584846A20E640E20 /* IOSApp */,
+				6FA1517718C6288B1418D55B /* MacApp */,
+				CD87E8B0230F9DCB378713D1 /* Shared */,
+				9D0E57620DB565E9F5951BB5 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		6FA1517718C6288B1418D55B /* MacApp */ = {
+			isa = PBXGroup;
+			children = (
+				D9A063AEEA7767B85D7F1CD8 /* MacDeskModel.swift */,
+				9CC8D4DAD415C8CFA525B106 /* MacDeskView.swift */,
+				C6B04001AEF453488F0C85D3 /* QuickyTradeMac.entitlements */,
+				670B5CDE711BD7146DDF974C /* QuickyTradeMacApp.swift */,
+				A9F54F15F81AAC8592A8621C /* Resources */,
+			);
+			path = MacApp;
+			sourceTree = "<group>";
+		};
+		97DA73B1584846A20E640E20 /* IOSApp */ = {
+			isa = PBXGroup;
+			children = (
+				6BE0DAE863DA85E2D718596A /* PhoneDeskModel.swift */,
+				A86F62D1E94A1B7372297554 /* PhoneRootView.swift */,
+				BA57E7543C3505D82CFEBD7F /* QuickyTradeIOS.entitlements */,
+				55CB0B7F1A2003FD9FA56E76 /* QuickyTradeIOSApp.swift */,
+			);
+			path = IOSApp;
+			sourceTree = "<group>";
+		};
+		9D0E57620DB565E9F5951BB5 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				942919D0E1A68176AC1C0382 /* QuickyTrade Companion.app */,
+				5EAB2FFA523BCA37EDE95A76 /* QuickyTradeMac.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A9F54F15F81AAC8592A8621C /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				AA75CEEA63A85030D9ABF6D4 /* ib_gateway_bridge.py */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		CD87E8B0230F9DCB378713D1 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				C455CCE01F99895F29F96E5B /* CompanionTransport.swift */,
+				D5CFA2237B73E63B8B820B59 /* TradingModels.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		79D7938016B78F8F206EF6A7 /* QuickyTradeMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 42A87CC74A317399C7C049DE /* Build configuration list for PBXNativeTarget "QuickyTradeMac" */;
+			buildPhases = (
+				E4E4D8855B56F5AD18A73DF0 /* Sources */,
+				91FD6A6C8B4EADA6745A9630 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = QuickyTradeMac;
+			packageProductDependencies = (
+			);
+			productName = QuickyTradeMac;
+			productReference = 5EAB2FFA523BCA37EDE95A76 /* QuickyTradeMac.app */;
+			productType = "com.apple.product-type.application";
+		};
+		BAB7A6915C3C7C5B13A27599 /* QuickyTradeIOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 51953838B3563D6502843BC2 /* Build configuration list for PBXNativeTarget "QuickyTradeIOS" */;
+			buildPhases = (
+				0BDAE5B41256E7F9F871BA3D /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = QuickyTradeIOS;
+			packageProductDependencies = (
+			);
+			productName = QuickyTradeIOS;
+			productReference = 942919D0E1A68176AC1C0382 /* QuickyTrade Companion.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		55C0C4D6AEA496FCB1710DE2 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+			};
+			buildConfigurationList = 4FA887567526D0858487E293 /* Build configuration list for PBXProject "QuickyTradeNative" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 1859F8B8441FE1F536F3F97C;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 9D0E57620DB565E9F5951BB5 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				BAB7A6915C3C7C5B13A27599 /* QuickyTradeIOS */,
+				79D7938016B78F8F206EF6A7 /* QuickyTradeMac */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		91FD6A6C8B4EADA6745A9630 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				91349CBC7BEBFD79172E9E7C /* ib_gateway_bridge.py in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		0BDAE5B41256E7F9F871BA3D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C0E1A58613F2C80DBD84E191 /* CompanionTransport.swift in Sources */,
+				69436E8B8CB4F5F92D11C74D /* PhoneDeskModel.swift in Sources */,
+				804920D6B450D98077B973F4 /* PhoneRootView.swift in Sources */,
+				325F3578031E8485A0EB0D70 /* QuickyTradeIOSApp.swift in Sources */,
+				FF6B52CBB6701E51C9D101A6 /* TradingModels.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E4E4D8855B56F5AD18A73DF0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				20179B55099EABA21D276C1F /* CompanionTransport.swift in Sources */,
+				3D99342941439AC910ADAB71 /* MacDeskModel.swift in Sources */,
+				967B4841622CE283B34E7150 /* MacDeskView.swift in Sources */,
+				8754A151AEE6111214E4B5C9 /* QuickyTradeMacApp.swift in Sources */,
+				9414B03D1F47CFCCE36965C3 /* TradingModels.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		21B0971BBEB29DCB630EEB78 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MacApp/QuickyTradeMac.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = QuickyTrade;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.quicktrade.mac;
+				PRODUCT_NAME = QuickyTrade;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		2291192105A75673F06BC291 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = IOSApp/QuickyTradeIOS.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 58PBRTCYS5;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = QuickyTrade;
+				INFOPLIST_KEY_NSBonjourServices = _quickytrade._tcp;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect securely to your QuickyTrade Mac trading desk.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Not used. Peer discovery is local-network only.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.quicktrade.ios;
+				PRODUCT_NAME = "QuickyTrade Companion";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		4195AA8113C18E2E30997B41 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		4789521A1C8ABF976EDE7F96 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		555C9EAF4EC2B1CE55487062 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = IOSApp/QuickyTradeIOS.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 58PBRTCYS5;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = QuickyTrade;
+				INFOPLIST_KEY_NSBonjourServices = _quickytrade._tcp;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect securely to your QuickyTrade Mac trading desk.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Not used. Peer discovery is local-network only.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.quicktrade.ios;
+				PRODUCT_NAME = "QuickyTrade Companion";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		C1DB6A928A037E793CD81326 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MacApp/QuickyTradeMac.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = QuickyTrade;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.quicktrade.mac;
+				PRODUCT_NAME = QuickyTrade;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		42A87CC74A317399C7C049DE /* Build configuration list for PBXNativeTarget "QuickyTradeMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				21B0971BBEB29DCB630EEB78 /* Debug */,
+				C1DB6A928A037E793CD81326 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		4FA887567526D0858487E293 /* Build configuration list for PBXProject "QuickyTradeNative" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4195AA8113C18E2E30997B41 /* Debug */,
+				4789521A1C8ABF976EDE7F96 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		51953838B3563D6502843BC2 /* Build configuration list for PBXNativeTarget "QuickyTradeIOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2291192105A75673F06BC291 /* Debug */,
+				555C9EAF4EC2B1CE55487062 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 55C0C4D6AEA496FCB1710DE2 /* Project object */;
+}

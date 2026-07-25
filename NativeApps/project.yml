@@ -1,0 +1,52 @@
+name: QuickyTradeNative
+options:
+  bundleIdPrefix: com.quicktrade
+  deploymentTarget:
+    macOS: "14.0"
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  QuickyTradeMac:
+    type: application
+    platform: macOS
+    sources:
+      - Shared
+      - MacApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.quicktrade.mac
+        PRODUCT_NAME: QuickyTrade
+        CODE_SIGN_ENTITLEMENTS: MacApp/QuickyTradeMac.entitlements
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: QuickyTrade
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
+  QuickyTradeIOS:
+    type: application
+    platform: iOS
+    sources:
+      - Shared
+      - IOSApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.quicktrade.ios
+        PRODUCT_NAME: QuickyTrade Companion
+        CODE_SIGN_ENTITLEMENTS: IOSApp/QuickyTradeIOS.entitlements
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: QuickyTrade
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Not used. Peer discovery is local-network only.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect securely to your QuickyTrade Mac trading desk.
+        INFOPLIST_KEY_NSBonjourServices: ["_quickytrade._tcp"]
+schemes:
+  QuickyTradeMac:
+    build:
+      targets: { QuickyTradeMac: all }
+    run: { config: Debug }
+  QuickyTradeIOS:
+    build:
+      targets: { QuickyTradeIOS: all }
+    run: { config: Debug }

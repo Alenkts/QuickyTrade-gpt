@@ -1,0 +1,18 @@
+trade-state.json
+.env
+node_modules/
+dist/
+NativeApps/.derivedData*/
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+__pycache__/
+.pytest_cache/
+src-tauri/target/
+graphify-out/
+.DS_Store
+# core/.env's QT_CORE_STATE_DB uses an unexpanded literal '~'; some code paths
+# resolve it relative to core/ cwd instead of the real home dir, producing
+# this stray runtime artifact.
+core/~/

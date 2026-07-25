@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="IBKR-only TradingView alert capture, paper execution, and lifecycle tracking.">
+  <title>QuickyTrade · IBKR Control Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="operator.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <strong>QUICKYTRADE</strong>
+        <span>IBKR CONTROL CENTER</span>
+      </div>
+      <span class="mode-badge" id="environmentBadge">PAPER · LOCKED</span>
+      <div class="header-status" aria-label="Trading status">
+        <div><small>WEBHOOK</small><strong id="webhookStatus">CHECKING</strong></div>
+        <div><small>EXECUTION</small><strong id="executionStatus">CAPTURE ONLY</strong></div>
+        <div><small>TWS CORE</small><strong id="coreStatus">UNAVAILABLE</strong></div>
+        <div><small>ACCOUNT</small><strong id="accountStatus">Unavailable</strong></div>
+        <div><small>APP REALIZED P&L · TODAY</small><strong id="dailyPnlStatus">Unavailable</strong></div>
+        <div><small>APP REFRESH</small><strong id="lastUpdate">—</strong></div>
+      </div>
+      <button class="secondary" id="refreshDashboard" type="button" title="Force an immediate re-poll of the TWS core and runtime status">REFRESH</button>
+      <button class="secondary" id="openSettings" type="button">SETTINGS</button>
+    </header>
+
+    <section class="safety-banner" id="safetyBanner" role="status" aria-live="polite">
+      <strong>CAPTURE-ONLY SAFETY MODE</strong>
+      <span>Alerts can be authenticated and recorded; no broker order can be placed in this mode.</span>
+    </section>
+
+    <main class="dashboard">
+      <aside class="side-stack">
+        <section class="panel ingress-card">
+          <div class="panel-title"><span>TRADINGVIEW INGRESS</span><span class="status-pill" id="ingressPill">CHECKING</span></div>
+          <div class="panel-body">
+            <p class="eyebrow">LOCAL ENDPOINT</p>
+            <code id="webhookEndpoint">http://127.0.0.1:4180/webhooks/tradingview</code>
+            <button class="secondary" id="copyEndpoint">COPY ENDPOINT</button>
+            <dl class="facts">
+              <div><dt>Authentication</dt><dd id="authStatus">Unavailable</dd></div>
+              <div><dt>Durable ledger</dt><dd id="ledgerStatus">Checking</dd></div>
+              <div><dt>Public edge</dt><dd>Operator-managed TLS required</dd></div>
+              <div><dt>Broker</dt><dd>IBKR only</dd></div>
+            </dl>
+          </div>
+        </section>
+
+        <section class="panel readiness-card">
+          <div class="panel-title"><span>READINESS</span><span id="readinessCount">0 / 4</span></div>
+          <ul class="check-list" id="readinessList"></ul>
+        </section>
+
+        <section class="panel reconciliation-card" title="Reflects GET /api/reconciliation -- an unresolved submission, protection, or management-transition outcome globally blocks new opens until it is reconciled.">
+          <div class="panel-title"><span>WHY IS THIS BLOCKED?</span><span class="status-pill" id="reconciliationPill">CHECKING</span></div>
+          <ul class="check-list" id="reconciliationList"></ul>
+        </section>
+
+        <section class="panel attention-card">
+          <div class="panel-title">
+            <span>ATTENTION</span>
+            <span class="attention-summary" aria-live="polite">
+              <span class="attention-risk-count" id="attentionRiskCount">CHECKING RISKS</span>
+              <span class="attention-notice-count" id="attentionNoticeCount">0 NOTICES</span>
+            </span>
+          </div>
+          <div class="attention-actions">
+            <button class="text-button" id="clearResolvedAttention" type="button" title="Acknowledges historical blocked or failed signal notices on this device. It does not delete alert history or hide active broker and position risks.">ACKNOWLEDGE NOTICES</button>
+          </div>
+          <div class="attention-list" id="attentionList">
+            <p class="empty-note">Checking broker and position risk evidence.</p>
+          </div>
+        </section>
+      </aside>
+
+      <section class="main-stack">
+        <section class="panel trade-desk-panel">
+          <div class="panel-title">
+            <div><span>MANUAL TRADE DESK</span><small>Creates a durable, reviewed intent; it never bypasses the shared IBKR controls.</small></div>
+            <div class="panel-actions"><span class="status-pill blocked" id="manualDeskStatus">NOT READY</span><button class="secondary" id="toggleManualTrade" type="button" aria-expanded="false" aria-controls="manualTradeForm">NEW MANUAL PROPOSAL</button></div>
+          </div>
+          <p class="manual-desk-summary" id="manualDeskSummary">New entries are blocked until a verified profile and manual-intent service are available.</p>
+          <form id="manualTradeForm" class="trade-form" hidden>
+            <div class="form-grid trade-fields">
+              <label>Symbol<input id="manualSymbol" class="control" maxlength="10" autocomplete="off" placeholder="SPY" required disabled></label>
+              <label>Strike selection<select id="manualStrikeSelection" class="control" disabled><option value="EXACT">Exact strike</option><option value="TARGET_RANGE">Target range (0DTE auto-select)</option></select></label>
+              <label id="manualExpiryField">Expiry<input id="manualExpiry" class="control" type="date" required disabled></label>
+              <label id="manualStrikeField">Strike<input id="manualStrike" class="control" inputmode="decimal" placeholder="e.g. 625" required disabled></label>
+              <label>Right<select id="manualRight" class="control" disabled><option value="CALL">Call</option><option value="PUT">Put</option></select></label>
+              <label>Quantity<span class="control static" title="Computed by the core from this profile's capital-per-trade amount divided by the option's live mid-price, capped by the core's configured contract ceiling.">Computed after preview</span></label>
+              <label>Entry policy<span class="control static">Fresh-quote marketable limit</span></label>
+            </div>
+            <fieldset class="management-choice">
+              <legend>After entry, this app should</legend>
+              <label><input type="radio" name="managementMode" value="DEFAULT" checked disabled> Use this source’s default management policy</label>
+              <label><input type="radio" name="managementMode" value="APP_MANAGED" disabled> Let the app manage this trade with the selected policy</label>
+              <label><input type="radio" name="managementMode" value="USER_MANAGED" disabled> Track only; I manage exits in IBKR</label>
+              <label class="management-profile-label">Management profile<select id="manualManagementProfile" class="control" disabled><option>Unavailable</option></select></label>
+            </fieldset>
+            <div class="trade-preview" id="manualTradePreview" hidden>
+              <p class="eyebrow">RESOLVED CONTRACT</p>
+              <dl class="facts">
+                <div><dt>Contract</dt><dd id="previewLocalSymbol">Unavailable</dd></div>
+                <div><dt>Account</dt><dd id="previewAccount">Unavailable</dd></div>
+                <div><dt>Action</dt><dd id="previewAction">Unavailable</dd></div>
+                <div><dt>Quantity</dt><dd id="previewQuantity">Unavailable</dd></div>
+                <div><dt>Order</dt><dd id="previewOrder">Unavailable</dd></div>
+                <div><dt>Submission</dt><dd id="previewSubmission">Not submitted</dd></div>
+              </dl>
+            </div>
+            <div class="form-actions">
+              <p id="manualDeskNote">Waiting for an eligible Paper profile and the manual-intent API.</p>
+              <div class="form-actions-buttons">
+                <button class="primary" id="reviewManualTrade" type="submit" disabled>REVIEW TRADE</button>
+                <button class="primary" id="submitManualTrade" type="button" hidden disabled>SUBMIT</button>
+              </div>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel active-trades-panel">
+          <div class="panel-title"><div><span>ACTIVE POSITIONS</span><small>Broker-confirmed fills only. Only app-owned positions may be closed here.</small></div><button class="secondary" id="refreshActiveTrades" type="button">REFRESH</button></div>
+          <div class="positions-status-row" id="positionsStatusRow" aria-live="polite">
+            <span class="status-pill" id="positionsStatusPill">CHECKING</span>
+            <span id="positionsStatusNote">Waiting for the first broker-confirmed positions read.</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>SYMBOL</th><th>ACCOUNT</th><th>QTY OPEN</th><th>ENTRY AVG</th><th>REALIZED P&amp;L</th><th>UNREALIZED P&amp;L</th><th>PROTECTION</th><th>LIFECYCLE</th><th>AS OF</th><th>ACTIONS</th></tr></thead>
+              <tbody id="activeTradeRows"><tr><td colspan="10" class="empty-cell">Active position tracking is unavailable.</td></tr></tbody>
+            </table>
+          </div>
+          <div class="allocation-grid" id="allocationGrid" aria-live="polite"></div>
+        </section>
+
+        <section class="panel closed-trades-panel">
+          <div class="panel-title"><div><span>CLOSED POSITIONS — TODAY</span><small>Read-only broker-confirmed positions closed during the New York market day.</small></div><button class="secondary" id="refreshClosedTrades" type="button">REFRESH</button></div>
+          <div class="positions-status-row" aria-live="polite">
+            <span class="status-pill" id="closedPositionsStatusPill">CHECKING</span>
+            <span id="closedPositionsStatusNote">Waiting for broker-confirmed closed-position data.</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>SYMBOL</th><th>ACCOUNT</th><th>QTY CLOSED</th><th>REALIZED P&amp;L</th><th>COMMISSION</th><th>CLOSED AT</th><th>SOURCE</th><th>OUTCOME</th><th>CORRELATION</th></tr></thead>
+              <tbody id="closedTradeRows"><tr><td colspan="9" class="empty-cell">Closed position tracking is unavailable.</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel alerts-panel">
+          <div class="panel-title">
+            <div><span>ALERT ACTIVITY</span><small>TradingView → durable intent → IBKR</small></div>
+            <button class="secondary" id="refreshAlerts">REFRESH</button>
+          </div>
+          <div class="alert-filters" aria-label="Alert activity filters">
+            <label>State<select id="alertStateFilter" class="control"><option value="ALL">All states</option><option value="ATTENTION">Needs attention</option><option value="READY">Received</option><option value="PROCESSING">Processing</option><option value="SUBMITTED">Submitted</option><option value="BLOCKED">Blocked</option><option value="FAILED">Failed</option><option value="SUBMISSION_UNKNOWN">Submission unknown</option></select></label>
+            <label>Symbol<input id="alertSymbolFilter" class="control" autocomplete="off" placeholder="SPY"></label>
+            <label>Trading day (New York)<input id="alertDateFilter" class="control" type="date" disabled title="Alert Activity is intentionally limited to today's New York market date."></label>
+            <button class="secondary" id="clearAlertFilters" type="button">CLEAR FILTERS</button>
+            <span class="alert-result-count" id="alertResultCount">Loading alerts…</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>RECEIVED</th><th>ALERT</th><th>SIGNAL</th><th>STRATEGY</th><th>STATE</th><th>CORRELATION</th><th></th></tr></thead>
+              <tbody id="alertRows"><tr><td colspan="7" class="empty-cell">No TradingView alerts captured yet.</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel detail-panel">
+          <div class="panel-title">
+            <div><span>ORDER LIFECYCLE</span><small id="selectedCorrelation">Select an alert</small></div>
+            <span class="status-pill" id="selectedStatus">NO SELECTION</span>
+          </div>
+          <div class="detail-empty" id="detailEmpty">
+            <strong>SELECT AN ALERT</strong>
+            <span>Inspect validation, queueing, broker submission, and recovery events.</span>
+          </div>
+          <div class="detail-content" id="detailContent" hidden>
+            <div class="summary-grid" id="alertSummary"></div>
+            <ol class="timeline" id="alertTimeline"></ol>
+            <div class="unknown-warning" id="unknownWarning" hidden>
+              <strong>DO NOT RESEND</strong>
+              <span>The broker outcome is unknown. Verify the order reference in TWS and reconcile before any retry.</span>
+            </div>
+          </div>
+        </section>
+
+      </section>
+    </main>
+
+    <dialog id="settingsDialog" class="settings-dialog">
+      <div class="panel-title">
+        <span>SETTINGS</span>
+        <button class="text-button" id="closeSettings" type="button">CLOSE ✕</button>
+      </div>
+      <div class="settings-body">
+        <section class="panel profiles-card">
+          <div class="panel-title"><span>IBKR CONNECTION PROFILE</span><span class="status-pill" id="profilePill">LOADING</span></div>
+          <div class="panel-body">
+            <label class="field-label" for="profileSelect">Named profile</label>
+            <select id="profileSelect" class="control" disabled><option>Loading profiles…</option></select>
+            <div class="environment-row"><strong id="profileEnvironment">PAPER</strong><span id="profileLockStatus">LOCKED</span></div>
+            <div class="form-grid compact">
+              <label>Host<input id="profileHost" class="control" autocomplete="off" placeholder="127.0.0.1" disabled></label>
+              <label>Socket port<input id="profilePort" class="control" inputmode="numeric" placeholder="7497" disabled></label>
+              <label>Client ID<input id="profileClientId" class="control" inputmode="numeric" placeholder="101" disabled></label>
+              <label>Verified account<input id="profileAccount" class="control" readonly value="Unavailable"></label>
+              <label>Capital per trade ($)<input id="profileCapitalPerTrade" class="control" inputmode="decimal" placeholder="e.g. 500" disabled></label>
+            </div>
+            <button class="secondary wide" id="saveProfile" type="button" disabled>SAVE CONNECTION SETTINGS</button>
+            <p class="field-note" id="profileNote">Profile details are unavailable until the execution service responds.</p>
+            <p class="field-note">Capital per trade sets contracts = floor(capital ÷ the option's fresh mid-price) for this profile's manual entries. Leave blank to keep the pre-existing default of one contract. The core additionally clamps this to its own deployment-configured contract ceiling regardless of what this amount implies.</p>
+          </div>
+        </section>
+
+        <section class="panel core-process-panel">
+          <div class="panel-title"><span>TWS CORE PROCESS</span><span class="status-pill" id="coreProcessPill">UNKNOWN</span></div>
+          <div class="panel-body">
+            <dl class="facts">
+              <div><dt>State</dt><dd id="coreProcessState">Unavailable</dd></div>
+              <div><dt>PID</dt><dd id="coreProcessPid">Unavailable</dd></div>
+              <div><dt>Started</dt><dd id="coreProcessStarted">Unavailable</dd></div>
+            </dl>
+            <div class="core-process-actions">
+              <button class="secondary" id="startCoreProcess" type="button">START</button>
+              <button class="secondary" id="restartCoreProcess" type="button">RESTART</button>
+              <button class="secondary" id="stopCoreProcess" type="button">STOP</button>
+              <button class="secondary" id="refreshCoreProcess" type="button">REFRESH</button>
+            </div>
+            <pre class="core-process-log" id="coreProcessLog"></pre>
+            <p class="field-note">Spawns <code>python3 -m quickytrade_core</code> from this app so a dead core can be recovered without a terminal. Editing <code>.env</code> or <code>core/.env</code> only takes effect on the next start/restart.</p>
+          </div>
+        </section>
+
+        <section class="panel strike-selection-panel">
+          <div class="panel-title"><span>STRIKE SELECTION (0DTE)</span><span class="status-pill" id="strikeSelectionPill">UNAVAILABLE</span></div>
+          <div class="panel-body">
+            <dl class="facts">
+              <div><dt>Metric</dt><dd id="strikeMetric">Unavailable</dd></div>
+              <div><dt>Target range</dt><dd id="strikeRange">Unavailable</dd></div>
+              <div><dt>Candidate strikes</dt><dd id="strikeCandidateCount">Unavailable</dd></div>
+            </dl>
+            <p class="field-note">Read-only: set via the core process's environment (<code>QT_STRIKE_TARGET_METRIC</code>, <code>QT_STRIKE_TARGET_LO</code>/<code>HI</code>, <code>QT_STRIKE_CANDIDATE_COUNT</code>) and applies to both manual Target-range entries and TradingView alerts. Changing it requires restarting the core — this is deliberate friction, not a bug.</p>
+          </div>
+        </section>
+
+        <section class="panel management-settings-panel">
+          <div class="panel-title"><div><span>TRADE MANAGEMENT DEFAULTS</span><small>Manual and TradingView may default differently; every trade can override this choice before submission.</small></div><button class="secondary" id="saveManagementDefaults" type="button" disabled>SAVE DEFAULTS</button></div>
+          <div class="management-settings">
+            <label>Manual default<select id="manualDefaultMode" class="control" disabled><option value="APP_MANAGED">App managed</option><option value="USER_MANAGED">Track only</option></select></label>
+            <label>TradingView default<select id="tradingviewDefaultMode" class="control" disabled><option value="APP_MANAGED">App managed</option><option value="USER_MANAGED">Track only</option><option value="TRADINGVIEW_MANAGED">TradingView-managed exits</option></select></label>
+            <label>Autosend (manual)<span class="autosend-row"><input type="checkbox" id="manualAutosend" disabled> Submit immediately after a successful preview</span></label>
+            <p class="field-note" id="managementSettingsNote">Defaults are unavailable until the trade-management service responds.</p>
+          </div>
+        </section>
+
+        <section class="panel scope-panel">
+          <div class="panel-title"><span>SUPPORTED PAPER SCOPE</span><span>LONG PREMIUM ONLY</span></div>
+          <div class="scope-grid">
+            <div><strong>APP-MANAGED</strong><span>Creates and maintains the configured protection only after acknowledged, reconciled app-owned fills.</span></div>
+            <div><strong>TRACK ONLY</strong><span>Records intent, order and fill lifecycle. It does not create, cancel or modify exits.</span></div>
+            <div><strong>STILL BLOCKED</strong><span>Live submission, market orders, short premium, external-position modification, retries after unknown submission.</span></div>
+          </div>
+        </section>
+      </div>
+    </dialog>
+
+    <dialog id="flattenConfirmDialog" class="flatten-dialog">
+      <div class="panel-title">
+        <span>CONFIRM FLATTEN</span>
+        <button class="text-button" id="closeFlattenDialog" type="button">CLOSE ✕</button>
+      </div>
+      <div class="settings-body">
+        <p class="field-note" id="flattenSummary">Unavailable</p>
+        <p class="field-note flatten-warning"><strong>This cancels every working protection leg on this position, then sells the entire verified remaining quantity as one reduce-only order. This cannot be undone.</strong></p>
+        <label class="field-label" for="flattenConfirmInput">Type FLATTEN to confirm</label>
+        <input id="flattenConfirmInput" class="control" autocomplete="off" placeholder="FLATTEN">
+        <div class="form-actions-buttons">
+          <button class="secondary" id="cancelFlatten" type="button">CANCEL</button>
+          <button class="primary danger" id="confirmFlatten" type="button" disabled>FLATTEN POSITION</button>
+        </div>
+      </div>
+    </dialog>
+
+    <footer>
+      <span>IBKR IS THE AUTHORITY FOR ORDERS, FILLS, FEES, POSITIONS, AND ACCOUNT VALUES</span>
+      <span class="spacer"></span>
+      <span id="footerMode">PAPER · CAPTURE ONLY</span>
+    </footer>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

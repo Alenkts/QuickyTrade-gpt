@@ -1,0 +1,15 @@
+[project]
+name = "quickytrade-core"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "Paper-only official IBKR TWS execution core for persisted app intents"
+
+[tool.unittest]
+start-directory = "tests"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
