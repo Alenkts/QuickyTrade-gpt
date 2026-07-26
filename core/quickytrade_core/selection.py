@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from zoneinfo import ZoneInfo
 
 from .domain import OptionChain, PriceIncrement, Quote
@@ -16,7 +16,11 @@ class SelectionError(ValueError):
 
 
 def validate_quote(quote: Quote, *, now: datetime, max_age_seconds: float) -> tuple[Decimal, Decimal]:
-    if quote.market_data_type.upper() not in {"LIVE", "UNKNOWN"}:
+    # "UNKNOWN" is not acceptable evidence. It used to be, which combined with
+    # the transport optimistically seeding "LIVE" meant a quote could be priced
+    # on without IBKR ever confirming the feed was live -- a frozen or delayed
+    # tick was indistinguishable from a real one.
+    if quote.market_data_type.upper() != "LIVE":
         raise SelectionError("MARKET_DATA_NOT_LIVE", "A live IBKR market-data quote is required")
     if quote.received_at.tzinfo is None or now.tzinfo is None:
         raise SelectionError("QUOTE_TIMESTAMP_INVALID", "Quote and current timestamps must be timezone-aware")
@@ -189,7 +193,9 @@ def marketable_limit(
         limit_price = round_to_tick(cap, increment, upward=False)
         marketable_floor = round_to_tick(ask, applicable_increment(ask, rules), upward=True)
         if limit_price < marketable_floor or limit_price > cap:
-            raise SelectionError("TICK_VALID_MARKETABLE_LIMIT_UNAVAILABLE", "No tick-valid buy limit fits the slippage cap")
+            raise SelectionError(
+                "TICK_VALID_MARKETABLE_LIMIT_UNAVAILABLE", "No tick-valid buy limit fits the slippage cap"
+            )
         return limit_price
     if action == "SELL":
         slippage = min(max_slippage_dollars, bid * max_slippage_percent)
@@ -199,7 +205,9 @@ def marketable_limit(
         increment = applicable_increment(bid, rules)
         limit_price = round_to_tick(bid, increment, upward=False)
         if limit_price < floor or limit_price > bid:
-            raise SelectionError("TICK_VALID_MARKETABLE_LIMIT_UNAVAILABLE", "No tick-valid sell limit fits the slippage cap")
+            raise SelectionError(
+                "TICK_VALID_MARKETABLE_LIMIT_UNAVAILABLE", "No tick-valid sell limit fits the slippage cap"
+            )
         return limit_price
     raise SelectionError("ORDER_ACTION_INVALID", "Only BUY and SELL limit actions are supported")
 

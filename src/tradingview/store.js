@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS signal_intents (
     CHECK (management_mode IN ('APP_MANAGED','USER_MANAGED','TRADINGVIEW_MANAGED')),
   management_policy_id TEXT,
   management_policy_json TEXT,
-  status TEXT NOT NULL CHECK (status IN ('READY','PROCESSING','SUBMITTED','BLOCKED','FAILED','SUBMISSION_UNKNOWN')),
+  status TEXT NOT NULL CHECK (status IN ('READY','PROCESSING','SUBMITTED','BLOCKED','FAILED','SUBMISSION_UNKNOWN','EXPIRED')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (source, alert_id)
@@ -81,6 +81,7 @@ export class TradingViewStore {
     this.#migrateCorrelationIds();
     this.#migrateExecutionEligibility();
     this.#migrateManagementOwnership();
+    this.#migrateStatusVocabulary();
     this.#recoverInterruptedSubmissions();
   }
 
@@ -180,6 +181,73 @@ export class TradingViewStore {
       // An earlier schema stored only a mutable policy identifier. Quarantine
       // those rows rather than resolving that identifier to today's policy.
       this.db.exec(`UPDATE signal_intents SET execution_eligible = 0 WHERE management_policy_json IS NULL`);
+    }
+  }
+
+  // A database created before queue expiry existed carries a status CHECK
+  // constraint without 'EXPIRED'. That is not cosmetic: findNextReady's expiry
+  // UPDATE would raise ERR_SQLITE_ERROR inside the drain loop and leave the
+  // stale intent sitting at 'READY', so the backlog would still flush on
+  // reconnect -- the exact failure the expiry path exists to prevent. SQLite
+  // cannot alter a CHECK in place, so the table is rebuilt (SQLite's documented
+  // "other kinds of schema changes" procedure). Runs last, after every additive
+  // column migration, so the explicit column list below is always satisfiable.
+  //
+  // EXPIRED is kept distinct from BLOCKED deliberately: BLOCKED means the core
+  // evaluated the signal and definitively refused it, EXPIRED means no broker
+  // was ever contacted. Collapsing them would make the ledger unable to
+  // distinguish "refused" from "never ran".
+  #migrateStatusVocabulary() {
+    const table = this.db.prepare(`
+      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'signal_intents'
+    `).get();
+    if (!table?.sql || /'EXPIRED'/.test(table.sql)) return;
+
+    // Legacy databases carry management_mode = 'LEGACY_ENTRY_ONLY' rows added by
+    // #migrateManagementOwnership via ALTER TABLE, which bypasses the original
+    // CHECK. The rebuilt constraint must admit that value or the copy fails.
+    this.db.exec('PRAGMA foreign_keys = OFF');
+    try {
+      this.#transaction(() => {
+        this.db.exec(`
+          CREATE TABLE signal_intents_rebuild (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            correlation_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            alert_id TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            execution_eligible INTEGER NOT NULL DEFAULT 0 CHECK (execution_eligible IN (0,1)),
+            management_mode TEXT NOT NULL DEFAULT 'APP_MANAGED'
+              CHECK (management_mode IN ('APP_MANAGED','USER_MANAGED','TRADINGVIEW_MANAGED','LEGACY_ENTRY_ONLY')),
+            management_policy_id TEXT,
+            management_policy_json TEXT,
+            status TEXT NOT NULL
+              CHECK (status IN ('READY','PROCESSING','SUBMITTED','BLOCKED','FAILED','SUBMISSION_UNKNOWN','EXPIRED')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (source, alert_id)
+          );
+          INSERT INTO signal_intents_rebuild
+            (id, correlation_id, source, alert_id, payload_hash, payload_json, execution_eligible,
+             management_mode, management_policy_id, management_policy_json, status, created_at, updated_at)
+          SELECT
+            id, correlation_id, source, alert_id, payload_hash, payload_json, execution_eligible,
+            management_mode, management_policy_id, management_policy_json, status, created_at, updated_at
+          FROM signal_intents;
+          DROP TABLE signal_intents;
+          ALTER TABLE signal_intents_rebuild RENAME TO signal_intents;
+        `);
+      });
+    } finally {
+      this.db.exec('PRAGMA foreign_keys = ON');
+    }
+    // DROP TABLE took the correlation index and its two NOT-NULL-enforcing
+    // triggers with it; this recreates them (all IF NOT EXISTS).
+    this.#migrateCorrelationIds();
+    const violations = this.db.prepare(`PRAGMA foreign_key_check`).all();
+    if (violations.length > 0) {
+      throw new Error(`signal_intents status migration left ${violations.length} dangling reference(s)`);
     }
   }
 
@@ -383,19 +451,26 @@ export class TradingViewStore {
     };
   }
 
-  // Looks up an alert/intent by the core's own correlation_id (a plain UUID
-  // this store generated via #newCorrelationId() and handed to the core as
-  // the persistence receipt -- see receive()). This is a distinct identifier
-  // from the "source:alertId" idempotencyKey shape (see prepareSubmission());
-  // the two must never be confused. Returns null (never guesses) when no
-  // intent has that exact correlation_id.
+  // Looks up an alert/intent by whatever the core reports as its correlation
+  // for a position. Two distinct shapes are legitimate here and both must
+  // resolve, because the core keys its own broker_submissions registry on the
+  // idempotencyKey (engine.py: `registry_key = normalized["idempotencyKey"]`),
+  // not on the UUID persistence receipt:
+  //
+  //   signal_intents.correlation_id  -> "989b6674-685f-..."      (UUID receipt)
+  //   broker_submissions.correlation_id -> "tradingview:<alertId>" (idempotencyKey)
+  //
+  // Only those two columns are consulted. An earlier revision also matched
+  // `orders.intent_id`, which meant a bare numeric string ("1") resolved to an
+  // unrelated intent by rowid and mis-rendered its ticker/right -- a guess, and
+  // this function must never guess. Returns null when nothing matches exactly.
   getAlertStatusByCorrelationId(correlationId) {
     if (typeof correlationId !== 'string' || !correlationId) return null;
     let row = this.db.prepare(`SELECT * FROM signal_intents WHERE correlation_id = ?`).get(correlationId);
     if (!row) {
       const orderRow = this.db.prepare(`
-        SELECT intent_id FROM orders WHERE idempotency_key = ? OR intent_id = ?
-      `).get(correlationId, correlationId);
+        SELECT intent_id FROM orders WHERE idempotency_key = ?
+      `).get(correlationId);
       if (orderRow) {
         row = this.db.prepare(`SELECT * FROM signal_intents WHERE id = ?`).get(orderRow.intent_id);
       }

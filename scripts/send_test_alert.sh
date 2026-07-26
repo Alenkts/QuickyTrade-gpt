@@ -3,14 +3,25 @@ set -euo pipefail
 
 # QuickyTrade TradingView Webhook Test Helper
 # Usage:
-#   bash scripts/send_test_alert.sh [ACTION] [TICKER] [SECRET] [PORT]
+#   QT_WEBHOOK_SECRET=... bash scripts/send_test_alert.sh [ACTION] [TICKER] [PORT]
 # Example:
-#   bash scripts/send_test_alert.sh OPEN_LONG_CALL QQQ secret123 4180
+#   QT_WEBHOOK_SECRET=... bash scripts/send_test_alert.sh OPEN_LONG_CALL QQQ 4180
+#
+# The secret is read ONLY from the environment. It used to be accepted as the
+# third positional argument, which put the live order-submission credential
+# into shell history and made it visible in `ps` to every user on the machine
+# for the lifetime of the process.
 
 ACTION="${1:-OPEN_LONG_CALL}"
 TICKER="${2:-QQQ}"
-SECRET="${3:-${QT_WEBHOOK_SECRET:-replace-with-a-long-random-secret}}"
-PORT="${4:-${QT_WEBHOOK_PORT:-4180}}"
+PORT="${3:-${QT_WEBHOOK_PORT:-4180}}"
+
+if [[ -z "${QT_WEBHOOK_SECRET:-}" ]]; then
+  echo "QT_WEBHOOK_SECRET is not set. Export it (or source your .env) and re-run;" >&2
+  echo "this script deliberately no longer accepts the secret as an argument." >&2
+  exit 2
+fi
+SECRET="${QT_WEBHOOK_SECRET}"
 HOST="${QT_WEBHOOK_HOST:-127.0.0.1}"
 
 URL="http://${HOST}:${PORT}/webhooks/tradingview"
@@ -18,7 +29,7 @@ TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 ACTION_LOWER="$(echo "${ACTION}" | tr '[:upper:]' '[:lower:]')"
 TICKER_LOWER="$(echo "${TICKER}" | tr '[:upper:]' '[:lower:]')"
-ALERT_ID="test-${TICKER_LOWER}-${ACTION_LOWER}-$(date +%s)"
+ALERT_ID="test-${TICKER_LOWER}-${ACTION_LOWER}-${TIMESTAMP}"
 
 echo "--------------------------------------------------------"
 echo "Sending test TradingView alert to QuickyTrade..."
@@ -38,15 +49,7 @@ PAYLOAD="$(cat <<EOF
   "strategy_id": "qqq-alerts",
   "strategy_version": "2026.07.18",
   "action": "${ACTION}",
-  "ticker": "${TICKER}",
-  "target_dte": 0,
-  "strike_policy": {
-    "type": "ATM_OFFSET",
-    "offset": 1
-  },
-  "risk_hint": {
-    "max_contracts": 1
-  }
+  "ticker": "${TICKER}"
 }
 EOF
 )"

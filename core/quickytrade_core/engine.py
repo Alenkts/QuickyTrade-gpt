@@ -404,6 +404,8 @@ class ExecutionEngine:
                 max_age_seconds=self.config.max_signal_age.total_seconds(),
                 max_future_skew_seconds=self.config.max_signal_future_skew.total_seconds(),
             )
+            if action.startswith("OPEN_"):
+                self._revalidate_entry_quote(contract, order)
             self.registry.record_broker_call_evidence(
                 registry_key,
                 account=order.account,
@@ -528,6 +530,45 @@ class ExecutionEngine:
                 "ACCOUNT_MISMATCH", "Connected IBKR accounts do not include the exact selected account"
             )
 
+    def _revalidate_entry_quote(self, contract: QualifiedContract, order: LimitOrderRequest) -> None:
+        """Re-price the entry against a second, independent quote before submitting.
+
+        The quote used for strike selection, sizing, and every protection level
+        is read once, near the start of a chain that also does contract
+        qualification, chain discovery, market-rule lookup, and broker-evidence
+        reads. Nothing re-checked it before placeOrder, so a quote that was
+        already wrong -- or that moved during that chain -- silently determined
+        the contract, the size, and every take-profit and stop price. One
+        observed entry carried a 0.23 limit implying an observed ask of at
+        least 0.18 and filled at 0.11.
+
+        A material move blocks. It does not adjust the order: re-deriving size
+        and protection from a new quote mid-flight would be a different trade
+        than the one that was reviewed, and the next signal can price it
+        properly.
+        """
+        fresh = self.transport.quote(contract)
+        bid, ask = validate_quote(
+            fresh, now=self._now(), max_age_seconds=self.config.max_quote_age.total_seconds()
+        )
+        fresh_mid = (bid + ask) / Decimal("2")
+        if fresh_mid < self.config.min_entry_premium:
+            raise ExecutionBlocked(
+                "PREMIUM_BELOW_MINIMUM",
+                f"Re-validated option mid-price {fresh_mid} is below the configured minimum entry premium "
+                f"{self.config.min_entry_premium}",
+            )
+        reference = order.limit_price
+        if reference <= 0:
+            raise ExecutionBlocked("OPTION_MID_PRICE_INVALID", "Order limit price is invalid for re-validation")
+        drift = abs(fresh_mid - reference) / reference
+        if drift > self.config.max_entry_quote_drift_percent:
+            raise ExecutionBlocked(
+                "ENTRY_QUOTE_MOVED",
+                f"The option quote moved {drift:.1%} between selection and submission "
+                f"(limit {reference}, re-validated mid {fresh_mid}); no order was sent",
+            )
+
     def _prepare_open(self, request: dict[str, Any]) -> tuple[QualifiedContract, LimitOrderRequest]:
         signal = request["signal"]
         symbol = signal["ticker"]
@@ -607,7 +648,15 @@ class ExecutionEngine:
         # the multiplier must be folded into the sizing formula, not just the
         # separate premium-cap check below.
         mid_price = (option_bid + option_ask) / Decimal("2")
-        quantity = self._resolve_quantity(signal, mid_price, multiplier)
+        # Entries only. A premium this low cannot express the configured
+        # take-profit/stop percentages to within a tick, and commission becomes
+        # a dominant share of gross P&L. See Config.min_entry_premium.
+        if mid_price < self.config.min_entry_premium:
+            raise ExecutionBlocked(
+                "PREMIUM_BELOW_MINIMUM",
+                f"Option mid-price {mid_price} is below the configured minimum entry premium "
+                f"{self.config.min_entry_premium}",
+            )
         self._verify_option_spread(option_bid, option_ask)
         rules = self._verified_market_rule(contract)
         limit_price = marketable_limit(
@@ -622,17 +671,26 @@ class ExecutionEngine:
             raise ExecutionBlocked(
                 "PREMIUM_LIMIT_EXCEEDED", "The one-contract marketable limit exceeds the premium cap"
             )
+        # Size from the price the order will actually be sent at, not from the
+        # mid. A marketable limit sits at or above the ask, so sizing on the mid
+        # lets the worst-case debit exceed the operator's stated capital budget
+        # by roughly half the spread per contract.
+        quantity = self._resolve_quantity(signal, limit_price, multiplier)
 
         return contract, self._order(request, contract, "BUY", limit_price, quantity)
 
-    def _resolve_quantity(self, signal: dict[str, Any], mid_price: Decimal, multiplier: Decimal) -> int:
+    def _resolve_quantity(self, signal: dict[str, Any], entry_price: Decimal, multiplier: Decimal) -> int:
         """Resolve the final OPEN order quantity.
 
+        `entry_price` is the per-share price the order will actually be sent
+        at (the marketable limit), never the mid -- sizing on the mid
+        understates the worst-case debit by up to half the spread per contract.
+
         When capital_per_trade_dollars is present, it fully replaces the
-        client-supplied quantity: contracts = floor(capital / (mid_price *
-        multiplier)) -- one contract costs mid_price-per-share times the
+        client-supplied quantity: contracts = floor(capital / (entry_price *
+        multiplier)) -- one contract costs entry_price-per-share times the
         contract's share multiplier (typically 100 for equity/ETF options),
-        not mid_price alone -- clamped to the deployment's
+        not entry_price alone -- clamped to the deployment's
         max_contracts_per_order ceiling. Never rounds up -- an amount that
         can't cover even one contract blocks rather than silently exceeding
         the operator's stated risk budget.
@@ -644,10 +702,10 @@ class ExecutionEngine:
         capital_raw = signal.get("capital_per_trade_dollars")
         if capital_raw is None:
             return min(signal.get("quantity", 1), self.config.max_contracts_per_order)
-        if not mid_price.is_finite() or mid_price <= 0:
-            raise ExecutionBlocked("OPTION_MID_PRICE_INVALID", "Option mid-price is invalid for capital-based sizing")
+        if not entry_price.is_finite() or entry_price <= 0:
+            raise ExecutionBlocked("OPTION_MID_PRICE_INVALID", "Option entry price is invalid for capital-based sizing")
         capital = Decimal(capital_raw)
-        contract_cost = mid_price * multiplier
+        contract_cost = entry_price * multiplier
         computed_quantity = int((capital / contract_cost).to_integral_value(rounding=ROUND_FLOOR))
         quantity = min(computed_quantity, self.config.max_contracts_per_order)
         if quantity < 1:
@@ -1415,6 +1473,102 @@ class ExecutionEngine:
     # thread; always under the same _execution_lock guarding entry/close
     # submission and ensure_protection().
 
+    def reconcile_protection_legs(self) -> dict[str, int]:
+        """Resolve working protection legs against broker execution evidence.
+
+        H7. Nothing ever moved a protection leg off SUBMITTED: the reviewed
+        session held 18 SUBMITTED legs against 9 CLOSED positions, so the
+        ledger could not answer "is this position actually still protected?"
+        and the operator-facing protection status was permanently overstated.
+
+        Strictly evidence-driven, in both directions:
+
+          * FILLED requires broker_executions rows for that leg's own
+            order_ref.
+          * CANCELLED requires a confirmed FILLED sibling in the same OCA
+            group -- one-cancels-all is a broker guarantee, so the sibling's
+            fill *is* the cancellation evidence.
+
+        A leg that has merely vanished from the open-order list is left
+        untouched: absence is equally consistent with a fill and a cancel, and
+        guessing would let the app claim protection was removed (or that a
+        take-profit filled) with no broker truth behind it.
+        """
+        if self.ledger is None or self.protection_ledger is None:
+            return {"filled": 0, "cancelled": 0}
+        filled_count = 0
+        cancelled_count = 0
+        filled_by_oca: dict[str, str] = {}
+        for leg in self.protection_ledger.working_legs():
+            order_ref = leg.get("order_ref")
+            if not order_ref:
+                continue
+            executions = self.ledger.executions_for_order_ref(order_ref)
+            if not executions:
+                continue
+            if self.protection_ledger.mark_filled(
+                leg["protection_id"],
+                execution_evidence={
+                    "resolvedBy": "BROKER_EXECUTION_EVIDENCE",
+                    "execIds": sorted(str(row["exec_id"]) for row in executions),
+                },
+            ):
+                filled_count += 1
+            if leg.get("oca_group"):
+                filled_by_oca[leg["oca_group"]] = leg["protection_id"]
+
+        for leg in self.protection_ledger.working_legs():
+            oca_group = leg.get("oca_group")
+            sibling = filled_by_oca.get(oca_group) if oca_group else None
+            if sibling and sibling != leg["protection_id"]:
+                if self.protection_ledger.mark_cancelled_by_oca(
+                    leg["protection_id"], filled_sibling_id=sibling
+                ):
+                    cancelled_count += 1
+        return {"filled": filled_count, "cancelled": cancelled_count}
+
+    def stale_working_entries(self) -> list[dict[str, Any]]:
+        """Working entry orders that have rested longer than the signal would allow.
+
+        H7. One reviewed entry rested unfilled for 19m39s before filling --
+        executing a signal the app itself would have rejected as expired four
+        times over. Entries go out `tif="DAY"` with no cancel-if-unfilled
+        logic anywhere.
+
+        This surfaces the condition rather than cancelling automatically.
+        Cancelling a resting entry is a new autonomous broker side effect on
+        an order that may fill in the same instant, and AGENTS.md reserves
+        that class of decision for the operator. The dashboard renders these
+        as an active risk so the operator can act in TWS.
+        """
+        if self.ledger is None:
+            return []
+        ttl_seconds = self.config.max_signal_age.total_seconds()
+        stale: list[dict[str, Any]] = []
+        try:
+            working = self.transport.working_orders(self.config.selected_account)
+        except (BrokerDefinitiveError, BrokerAmbiguousError):
+            return []
+        for order in working:
+            evidence = self.registry.submission_evidence_for_order_ref(getattr(order, "order_ref", ""))
+            if evidence is None or (evidence.get("action") or "").startswith("CLOSE"):
+                continue
+            submitted_at = evidence.get("created_at")
+            if not submitted_at:
+                continue
+            try:
+                age = (self._now() - datetime.fromisoformat(submitted_at)).total_seconds()
+            except (TypeError, ValueError):
+                continue
+            if age > ttl_seconds:
+                stale.append({
+                    "correlation_id": evidence.get("correlation_id"),
+                    "order_ref": getattr(order, "order_ref", ""),
+                    "age_seconds": int(age),
+                    "ttl_seconds": int(ttl_seconds),
+                })
+        return stale
+
     def ensure_transitions(self, correlation_id: str) -> None:
         with self._execution_lock:
             self._ensure_transitions_locked(correlation_id)
@@ -1481,14 +1635,14 @@ class ExecutionEngine:
                 tid, correlation_id=correlation_id, after=after, action=action
             )
             if claim.row["status"] == "PENDING":
-                self.transition_ledger.mark_applied(
+                self.transition_ledger.mark_inert(
                     tid,
                     details={
                         "reason": "TAKE_PROFIT_LEVEL_SKIPPED_ZERO_ALLOCATION",
                         "note": (
                             f"Take-profit level {after} never received a real broker order (its allocated "
                             "quantity rounded to zero) -- there is no fill to confirm, so this transition "
-                            "can never fire and is treated as permanently, correctly inert."
+                            "can never fire. No stop was moved and no broker call was made."
                         ),
                     },
                 )

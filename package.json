@@ -10,7 +10,7 @@
     "test": "node --test && npm run test:core",
     "test:alert": "bash scripts/send_test_alert.sh",
     "test:core": "PYTHONPATH=core python3 -m unittest discover -s core/tests -v",
-    "check": "node --check app.js && node --check server.mjs && node --check src/operator/*.js && node --check src/tradingview/*.js && python3 -m compileall -q core/quickytrade_core core/tests && npm test",
+    "check": "node --check app.js && node --check server.mjs && node --check src/operator/*.js && node --check src/tradingview/*.js && python3 -m compileall -q core/quickytrade_core core/tests && npm run lint && npm test",
     "lint": "eslint . && npm run lint:core",
     "lint:core": "python3 -m ruff check core/quickytrade_core core/tests"
   },

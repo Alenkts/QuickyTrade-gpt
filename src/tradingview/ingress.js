@@ -80,6 +80,9 @@ export class TradingViewWebhookIngress {
       maxAgeMs: this.maxAgeMs,
       maxFutureSkewMs: this.maxFutureSkewMs,
       maxRiskHintContracts: this.maxRiskHintContracts,
+      // TradingView is an untrusted signal source. Contract geometry stays an
+      // app-side policy decision -- see allowAtmOffsetStrikePolicy.
+      allowAtmOffsetStrikePolicy: false,
     });
     if (this.allowedTickers && !this.allowedTickers.has(payload.ticker)) {
       throw new WebhookError('SYMBOL_NOT_ALLOWED', 'ticker is not in the local TradingView allowlist', 400);

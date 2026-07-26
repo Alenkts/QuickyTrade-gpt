@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import sys
 import tempfile
+import threading
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -21,6 +22,11 @@ def _bare_transport(ledger: ExecutionLedger, positions=()) -> OfficialIbapiTrans
     transport = OfficialIbapiTransport.__new__(OfficialIbapiTransport)
     transport.ledger = ledger
     transport._positions = list(positions)
+    # _flag_unattributed_positions reads _positions under the callback lock so
+    # a concurrent _refresh_positions cannot hand it a short read (see the
+    # _snapshot_lock comment in ibapi_transport).
+    transport._lock = threading.RLock()
+    transport._snapshot_lock = threading.RLock()
     return transport
 
 

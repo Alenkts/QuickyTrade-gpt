@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from threading import RLock
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 LEDGER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS broker_executions (
@@ -105,11 +106,16 @@ _VALID_LIFECYCLE_STATUSES = frozenset(
     {"SUBMITTED", "PARTIALLY_FILLED", "FILLED", "CLOSING", "CLOSED"}
 )
 def _normalized_execution_time(value: str | None) -> str | None:
-    """Return an absolute execution timestamp or None when IBKR evidence is ambiguous.
+    """Return an absolute execution timestamp, or None when IBKR evidence is ambiguous.
 
-    Parses ISO timestamps as well as standard IBKR execution format
-    ("20260724 10:17:23 US/Eastern" or "20260724 10:17:23").
-    Fails closed to None if unparseable.
+    Accepts ISO-8601 with an offset, and IBKR's own execution format with an
+    explicit zone ("20260724 10:17:23 US/Eastern").
+
+    A *naive* IBKR timestamp ("20260724 10:17:23") deliberately returns None.
+    Reporting in New York time does not prove the callback used New York time,
+    and this value becomes ``positions.closed_at``, which keys the operator's
+    daily realized P&L. Guessing a zone here would silently re-date a fill; a
+    None is rendered as Unavailable, which is the honest outcome.
     """
     if not value:
         return None
@@ -122,21 +128,21 @@ def _normalized_execution_time(value: str | None) -> str | None:
         pass
 
     parts = text.split()
-    if len(parts) >= 2:
-        date_str, time_str = parts[0], parts[1]
-        tz_str = parts[2] if len(parts) >= 3 else "America/New_York"
-        if tz_str == "US/Eastern":
-            tz_str = "America/New_York"
-        date_clean = date_str.replace("-", "")
-        if len(date_clean) == 8 and len(time_str) == 8:
-            dt_str = f"{date_clean[:4]}-{date_clean[4:6]}-{date_clean[6:8]} {time_str}"
-            try:
-                tz = ZoneInfo(tz_str)
-                dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz)
-                return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
-            except Exception:
-                pass
-    return None
+    if len(parts) < 3:
+        return None
+    date_str, time_str, tz_str = parts[0], parts[1], parts[2]
+    date_clean = date_str.replace("-", "")
+    if len(date_clean) != 8 or len(time_str) != 8:
+        return None
+    try:
+        zone = ZoneInfo("America/New_York" if tz_str == "US/Eastern" else tz_str)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    try:
+        naive = datetime.strptime(f"{date_clean} {time_str}", "%Y%m%d %H:%M:%S")
+    except ValueError:
+        return None
+    return naive.replace(tzinfo=zone).astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)

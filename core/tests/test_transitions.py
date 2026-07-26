@@ -558,7 +558,10 @@ class TransitionsTests(unittest.TestCase):
 
     # ---- SKIPPED_ZERO_ALLOCATION level: resolved APPLIED, permanently inert
 
-    def test_skipped_zero_allocation_level_transition_is_marked_applied_with_a_note(self):
+    # H5. A transition whose level never received a real broker order resolves
+    # to INERT, not APPLIED. "APPLIED" answered "did my trailing stop engage?"
+    # with yes, for a stop that was never placed and never modified.
+    def test_skipped_zero_allocation_level_transition_is_inert_never_reported_as_applied(self):
         correlation_id = "manual:transitions-skipped"
         policy = management_policy(
             allocations=(50, 50), stop_loss_percent="25",
@@ -576,7 +579,9 @@ class TransitionsTests(unittest.TestCase):
 
         tid = transition_id(correlation_id, "TP2")
         row = self.transition_ledger.get(tid)
-        self.assertEqual("APPLIED", row["status"])
+        self.assertEqual("INERT", row["status"])
+        self.assertNotEqual("APPLIED", row["status"])
+        self.assertIsNone(row["applied_at"], "nothing was applied, so there is no applied_at")
         self.assertIn("SKIPPED_ZERO_ALLOCATION", row["details_json"])
         self.assertEqual([], self.transport.modified_stop)
 

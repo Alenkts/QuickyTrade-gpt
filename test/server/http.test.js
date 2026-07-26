@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHmac } from 'node:crypto';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const CORE_TOKEN = 'x'.repeat(40);
@@ -388,7 +388,17 @@ async function seedOpenEntry() {
   // never the "manual:<id>" idempotencyKey shape, which is a distinct
   // identifier server.mjs's lookupOriginatingAlert must not confuse with the
   // core's correlation_id (see server.mjs's lookupOriginatingAlert comment).
-  const entryCorrelationId = submission.correlationId;
+  //
+  // Verification gate 2. The core keys its own broker_submissions registry on
+  // the *idempotencyKey* ("manual:<id>" / "tradingview:<alertId>"), not on the
+  // UUID persistence receipt -- see engine.py's
+  // `registry_key = normalized["idempotencyKey"]`. This fixture previously
+  // seeded the UUID, which is a shape the real core never reports, so the whole
+  // close-path suite passed against an impossible contract while
+  // POST /api/trades/:id/close returned ENTRY_REFERENCE_NOT_FOUND for every
+  // real position. Seed the registry shape the core actually produces.
+  const entryCorrelationId = `manual:${intent.id}`;
+  assert.notEqual(entryCorrelationId, submission.correlationId);
   fakeCore.state.positionsItems = [{
     correlation_id: entryCorrelationId, account: 'DU12345', con_id: 999, symbol: 'QQQ',
     opened_quantity: '4', closed_quantity: '0', open_quantity: '4', entry_avg_price: '1.05',
@@ -528,4 +538,167 @@ test('runtime capabilities reflect real manual/app-managed availability, not a s
   assert.equal(body.capabilities.tradingviewPaperEntry, true);
   // This fixture's fake core reports PAPER, so live entry stays false too.
   assert.equal(body.capabilities.liveEntry, false);
+});
+
+// ---- verification gates from docs/REVIEW_2026-07-25.md --------------------
+
+const WEBHOOK_SECRET = 'a'.repeat(40);
+
+function signedWebhook(payload) {
+  const raw = Buffer.from(JSON.stringify(payload));
+  const signature = createHmac('sha256', WEBHOOK_SECRET).update(raw).digest('hex');
+  return {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-tradingview-signature': `sha256=${signature}` },
+    body: raw,
+  };
+}
+
+function tradingViewAlert(overrides = {}) {
+  return {
+    schema_version: '1',
+    alert_id: `gate-QQQ-C-${randomUUID()}`,
+    sent_at: new Date().toISOString(),
+    strategy_id: 'gate-strategy',
+    strategy_version: '1.0',
+    action: 'OPEN_LONG_CALL',
+    ticker: 'QQQ',
+    ...overrides,
+  };
+}
+
+async function alertStatus(alertId) {
+  const response = await fetch(`${base}/api/tradingview/alerts?limit=100`);
+  const body = await response.json();
+  return (body.items || []).find((item) => item.alertId === alertId) || null;
+}
+
+// Gate 1. This is the regression test for C3: server.mjs called
+// operatorStore.getSelectedProfile() on every TradingView-sourced submission,
+// and the method did not exist. The resulting TypeError was classified as
+// ambiguous, so every alert was durably recorded as SUBMISSION_UNKNOWN --
+// "an order may exist at IBKR" -- with provably zero broker contact. No test
+// exercised placeTrade with source:'tradingview' at all; this one does.
+test('a signed TradingView webhook reaches the core and ends SUBMITTED, never a fabricated SUBMISSION_UNKNOWN', async () => {
+  const alert = tradingViewAlert();
+  const accepted = await fetch(`${ingressBase}/webhooks/tradingview`, signedWebhook(alert));
+  assert.equal(accepted.status, 202);
+  const acceptedBody = await accepted.json();
+  assert.equal(acceptedBody.accepted, true);
+
+  let status = null;
+  const deadline = Date.now() + 8_000;
+  while (Date.now() < deadline) {
+    status = await alertStatus(alert.alert_id);
+    if (status && status.status !== 'READY' && status.status !== 'PROCESSING') break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(status, 'expected the alert to be durably recorded');
+  assert.equal(status.status, 'SUBMITTED');
+  assert.equal(status.order.brokerOrderId, '9001');
+});
+
+// Gate 6 (H8). An alert accepted while the core was unavailable must not be
+// submitted once the core returns: three stale 0DTE entries drained within 8ms
+// of each other after sitting READY for up to 3.5 hours. `sent_at` is inside
+// the ingress window here, and the intent is aged past the drain budget by
+// rewriting created_at directly -- exactly what a multi-hour outage produces.
+test('an alert that goes stale in the queue expires instead of flushing on reconnect', async () => {
+  const { TradingViewStore } = await import('../../src/tradingview/store.js');
+  const alert = tradingViewAlert({ action: 'OPEN_LONG_PUT' });
+  const accepted = await fetch(`${ingressBase}/webhooks/tradingview`, signedWebhook(alert));
+  assert.equal(accepted.status, 202);
+
+  // Age the queued row past QT_WEBHOOK_MAX_AGE_MS without waiting it out.
+  const store = new TradingViewStore(join(dataDir, 'tradingview.sqlite'));
+  try {
+    const stale = new Date(Date.now() - (60 * 60 * 1000)).toISOString();
+    store.db.prepare('UPDATE signal_intents SET created_at = ? WHERE alert_id = ?').run(stale, alert.alert_id);
+  } finally {
+    store.close();
+  }
+
+  // findNextReady must expire it rather than throw on the status CHECK
+  // constraint and leave it READY (which is what shipped before this fix).
+  await fetch(`${base}/api/tradingview/runtime?refresh=1`);
+  await new Promise((r) => setTimeout(r, 500));
+
+  const status = await alertStatus(alert.alert_id);
+  assert.ok(status, 'expected the alert to still be recorded');
+  assert.equal(status.status, 'EXPIRED');
+  assert.equal(status.order, null, 'an expired alert must never have produced an order');
+});
+
+// C6. ATM_OFFSET is pure listed-strike geometry with no band check; accepting
+// it from the wire hands contract selection to the Pine script author.
+test('TradingView may not select contract geometry with ATM_OFFSET', async () => {
+  const alert = tradingViewAlert({ strike_policy: { type: 'ATM_OFFSET', offset: 1 } });
+  const response = await fetch(`${ingressBase}/webhooks/tradingview`, signedWebhook(alert));
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(body.code, 'STRIKE_POLICY_NOT_ALLOWED');
+});
+
+// M12. (source, alert_id) is the sole durable dedup key.
+test('a bare-timestamp alert_id is rejected as an insufficient deduplication key', async () => {
+  const response = await fetch(`${ingressBase}/webhooks/tradingview`,
+    signedWebhook(tradingViewAlert({ alert_id: '2026-07-24T18:32:00Z' })));
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, 'INVALID_ALERT_ID');
+});
+
+// H11. The real attack is bodyless: a cross-site fetch with mode:'no-cors'
+// sends no Content-Type, so a media-type allowlist alone never sees it.
+// Stopping the core mid-position also stops the sweep that maintains stops.
+test('a bodyless cross-site POST cannot stop the core', async () => {
+  for (const headers of [
+    { origin: 'https://evil.example' },
+    { 'sec-fetch-site': 'cross-site' },
+  ]) {
+    const response = await fetch(`${base}/api/core/process/stop`, { method: 'POST', headers });
+    assert.equal(response.status, 403, `expected 403 for ${JSON.stringify(headers)}`);
+    assert.equal((await response.json()).code, 'CROSS_ORIGIN_FORBIDDEN');
+  }
+});
+
+// C1. An absent Host header previously skipped validation entirely, which is a
+// bypass sitting next to the control that exists to stop DNS rebinding.
+test('Host validation rejects a non-loopback host and an absent host alike', async () => {
+  // `Host` is a forbidden header name for fetch(), so these have to go out over
+  // a raw socket -- which is also exactly how a non-browser attacker would send
+  // them.
+  const rawRequest = (requestLines) => new Promise((resolvePromise, reject) => {
+    const socket = net.connect(PORT, '127.0.0.1', () => socket.write(requestLines));
+    let data = '';
+    socket.on('data', (chunk) => { data += chunk.toString('utf8'); });
+    socket.on('end', () => resolvePromise(data));
+    socket.on('error', reject);
+  });
+
+  const rebind = await rawRequest('GET /api/tradingview/runtime HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n');
+  assert.match(rebind.split('\r\n')[0], /^HTTP\/1\.[01] 403 /, 'a non-loopback Host must be refused');
+
+  const noHost = await rawRequest('GET /api/tradingview/runtime HTTP/1.0\r\n\r\n');
+  assert.match(noHost.split('\r\n')[0], /^HTTP\/1\.[01] 403 /, 'an absent Host must not skip validation');
+
+  const loopback = await rawRequest(`GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nConnection: close\r\n\r\n`);
+  assert.match(loopback.split('\r\n')[0], /^HTTP\/1\.[01] 200 /, 'loopback must still be served');
+});
+
+// M10. The core's preview body carries the full account number and is rendered
+// straight into the operator's review panel.
+test('the manual preview never returns an unmasked account number', async () => {
+  const created = await fetch(`${base}/api/trade-intents/manual`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      profileId: 'paper-tws', symbol: 'QQQ', strikeSelection: 'EXACT', expiry: '20261231', strike: 500,
+      right: 'C', entryPolicy: 'MARKETABLE_LIMIT', managementMode: 'APP_MANAGED',
+      managementProfileId: 'paper-balanced-v1',
+    }),
+  });
+  assert.equal(created.status, 202);
+  const { preview } = await created.json();
+  assert.ok(preview, 'expected a core preview');
+  assert.notEqual(preview.account, 'DU12345');
+  assert.match(preview.account, /^DU\*+345$/);
 });

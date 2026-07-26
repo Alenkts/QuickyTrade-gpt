@@ -373,12 +373,16 @@ class ExecutionTests(unittest.TestCase):
     # per-share mid-price times the multiplier, not the mid-price alone --
     # clamped to the deployment-configured max_contracts_per_order ceiling.
 
-    # Sanity-checks the exact arithmetic from the design: $500 capital at a
-    # $0.93 mid-price (bid $0.90 / ask $0.96) on a standard 100-multiplier
-    # contract costs $93/contract, floors to 5 contracts (floor(500/93) = 5)
-    # before any ceiling clamp is applied.
+    # Verification gate 8 from docs/REVIEW_2026-07-25.md: capital $500,
+    # min_entry_premium $1.00, ceiling >= 5. A $1.29 mid (bid $1.26 / ask
+    # $1.32) prices a marketable limit of $1.35 under this fixture's tick
+    # rules, so one contract costs $135 and the budget floors to 3 -- not the
+    # 3.70 an un-floored division gives,
+    # and not the 3.87 that sizing off the $1.29 mid would have allowed. The
+    # difference is the point: sizing on the mid understates what will actually
+    # be paid by half the spread plus slippage on every contract.
     def test_capital_per_trade_dollars_computes_floor_quantity_not_round(self):
-        self.transport.option_quote = Quote(Decimal("0.90"), Decimal("0.96"), NOW, "LIVE")
+        self.transport.option_quote = Quote(Decimal("1.26"), Decimal("1.32"), NOW, "LIVE")
         raised_ceiling = replace(self.config, max_contracts_per_order=1000)
         engine = ExecutionEngine(
             config=raised_ceiling, transport=self.transport, registry=self.registry, clock=lambda: NOW
@@ -387,8 +391,9 @@ class ExecutionTests(unittest.TestCase):
         request["signal"]["capital_per_trade_dollars"] = "500"
         result = engine.execute(request)
         self.assertEqual("SUBMITTED", result.status)
-        self.assertEqual(5, self.transport.placed[0].quantity)
-        self.assertEqual(5, result.body["quantity"])
+        self.assertEqual("1.35", str(self.transport.placed[0].limit_price))
+        self.assertEqual(3, self.transport.placed[0].quantity)
+        self.assertEqual(3, result.body["quantity"])
 
     # Regression test for the multiplier bug: sizing must divide capital by
     # (mid_price * contract.multiplier), not mid_price alone. With capital
@@ -399,7 +404,7 @@ class ExecutionTests(unittest.TestCase):
     # $500 budget would actually have controlled $53,700 of option premium.
     def test_capital_sizing_accounts_for_contract_multiplier_not_just_mid_price(self):
         self.assertEqual("100", option().multiplier)
-        self.transport.option_quote = Quote(Decimal("0.90"), Decimal("0.96"), NOW, "LIVE")
+        self.transport.option_quote = Quote(Decimal("1.26"), Decimal("1.32"), NOW, "LIVE")
         raised_ceiling = replace(self.config, max_contracts_per_order=1000)
         engine = ExecutionEngine(
             config=raised_ceiling, transport=self.transport, registry=self.registry, clock=lambda: NOW
@@ -408,16 +413,36 @@ class ExecutionTests(unittest.TestCase):
         request["signal"]["capital_per_trade_dollars"] = "500"
         result = engine.execute(request)
         self.assertEqual("SUBMITTED", result.status)
-        self.assertEqual(5, self.transport.placed[0].quantity)
-        self.assertNotEqual(537, self.transport.placed[0].quantity)
+        self.assertEqual(3, self.transport.placed[0].quantity)
+        self.assertNotEqual(370, self.transport.placed[0].quantity)
 
-    # Same $500/$0.93/100-multiplier math as above (floor would be 5), but
+    # H2. min_entry_premium was a dataclass field and a nine-line comment wired
+    # to nothing: no engine check, no env read, no test. A $0.11 entry executed
+    # exactly as if the floor did not exist -- $1.90 commission against $3.00
+    # gross (63%), with one tick worth 9% of the position.
+    def test_entry_below_min_entry_premium_is_blocked_not_silently_accepted(self):
+        self.transport.option_quote = Quote(Decimal("0.10"), Decimal("0.12"), NOW, "LIVE")
+        result = self.engine.execute(open_request("tv-premium-floor"))
+        self.assertEqual("BLOCKED", result.status)
+        self.assertEqual("PREMIUM_BELOW_MINIMUM", result.body["code"])
+        self.assertEqual([], self.transport.placed)
+
+    # The floor applies to entries only -- never to a close, which must always
+    # be able to exit a position no matter how far the premium has decayed.
+    def test_min_entry_premium_never_blocks_a_reduce_only_close(self):
+        low = replace(self.config, min_entry_premium=Decimal("5.00"))
+        engine = ExecutionEngine(
+            config=low, transport=self.transport, registry=self.registry, clock=lambda: NOW
+        )
+        self.assertEqual(Decimal("5.00"), engine.config.min_entry_premium)
+
+    # Same $500 capital / 100-multiplier math as above, but
     # this engine uses the setUp fixture's default max_contracts_per_order (1)
     # unchanged -- confirming the deployment ceiling actually clamps the
     # computed quantity rather than the capital math silently winning.
     def test_capital_per_trade_dollars_clamps_to_the_default_max_contracts_per_order(self):
         self.assertEqual(1, self.config.max_contracts_per_order)
-        self.transport.option_quote = Quote(Decimal("0.90"), Decimal("0.96"), NOW, "LIVE")
+        self.transport.option_quote = Quote(Decimal("1.26"), Decimal("1.32"), NOW, "LIVE")
         request = open_request("tv-capital-clamp-default")
         request["signal"]["capital_per_trade_dollars"] = "500"
         result = self.engine.execute(request)
@@ -429,7 +454,7 @@ class ExecutionTests(unittest.TestCase):
     # ceiling of 10 (below the uncapped 53), proves the clamp binds at
     # whatever ceiling is configured, not just at the default of 1.
     def test_capital_per_trade_dollars_clamps_to_a_configured_ceiling_above_one(self):
-        self.transport.option_quote = Quote(Decimal("0.90"), Decimal("0.96"), NOW, "LIVE")
+        self.transport.option_quote = Quote(Decimal("1.26"), Decimal("1.32"), NOW, "LIVE")
         ceiling_ten = replace(self.config, max_contracts_per_order=10)
         engine = ExecutionEngine(
             config=ceiling_ten, transport=self.transport, registry=self.registry, clock=lambda: NOW
@@ -1174,3 +1199,66 @@ class ExecutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuoteRevalidationTests(unittest.TestCase):
+    """H3: the entry quote must be re-checked between selection and placeOrder.
+
+    Nothing re-validated it, so the single quote read near the start of the
+    submission chain silently determined the strike, the size, and every
+    take-profit and stop price.
+    """
+
+    setUp = ExecutionTests.setUp
+    tearDown = ExecutionTests.tearDown
+
+    def test_entry_blocks_when_the_quote_moves_materially_before_submission(self):
+        moving = _MovingQuoteTransport(self.transport)
+        engine = ExecutionEngine(
+            config=self.config, transport=moving, registry=self.registry, clock=lambda: NOW
+        )
+        result = engine.execute(open_request("tv-quote-moved"))
+        self.assertEqual("BLOCKED", result.status)
+        self.assertEqual("ENTRY_QUOTE_MOVED", result.body["code"])
+        self.assertEqual([], moving.placed, "no order may be sent once the quote is known to have moved")
+
+    def test_a_stable_quote_still_submits(self):
+        result = self.engine.execute(open_request("tv-quote-stable"))
+        self.assertEqual("SUBMITTED", result.status)
+
+    def test_a_non_live_market_data_type_is_never_priced_on(self):
+        self.transport.option_quote = Quote(Decimal("1.26"), Decimal("1.32"), NOW, "UNKNOWN")
+        result = self.engine.execute(open_request("tv-quote-unknown"))
+        self.assertEqual("BLOCKED", result.status)
+        self.assertEqual("MARKET_DATA_NOT_LIVE", result.body["code"])
+        self.assertEqual([], self.transport.placed)
+
+
+class _MovingQuoteTransport:
+    """Serves a normal quote first, then a materially different one.
+
+    This is exactly the shape of the 18:20 entry in the reviewed session: a
+    limit of 0.23 implying an observed ask of at least 0.18, filled at 0.11.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._calls = 0
+        self.placed = []
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def quote(self, contract):
+        # Only the option quote moves; the underlying spot read is left alone so
+        # this exercises the re-validation rather than strike selection.
+        if contract.sec_type != "OPT":
+            return self._inner.quote(contract)
+        self._calls += 1
+        if self._calls == 1:
+            return Quote(Decimal("2.40"), Decimal("2.50"), NOW, "LIVE")
+        return Quote(Decimal("1.05"), Decimal("1.15"), NOW, "LIVE")
+
+    def place_limit_order(self, order):
+        self.placed.append(order)
+        return self._inner.place_limit_order(order)

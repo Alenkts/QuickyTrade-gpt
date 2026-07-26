@@ -5,3 +5,29 @@
 .panel-actions,.attention-actions{display:flex;align-items:center;gap:8px}.attention-actions{padding:0 9px 8px;border-bottom:1px solid var(--line)}.manual-desk-summary{margin:0;padding:12px 13px;color:var(--dim);font-size:12px;line-height:1.45}.closed-trades-panel .table-wrap{max-height:260px}.alert-filters{display:grid;grid-template-columns:repeat(3,minmax(120px,1fr)) auto minmax(160px,1fr);align-items:end;gap:8px;padding:10px 13px;border-bottom:1px solid var(--line)}.alert-result-count{align-self:center;color:var(--dim);font:11px 'IBM Plex Mono';line-height:1.4}button:focus-visible,.control:focus-visible,#activeTradeRows tr[data-trade-id]:focus-visible{outline:2px solid var(--blue);outline-offset:2px}@media(max-width:1050px){.alert-filters{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){.panel-actions{align-items:flex-end;flex-direction:column}.alert-filters{grid-template-columns:1fr}.alert-result-count{padding-top:4px}}
 .positions-status-row{display:flex;align-items:center;gap:9px;padding:8px 13px;border-bottom:1px solid var(--line);font-size:10px}.positions-status-row span:last-child{color:var(--dim)}.empty-cell.critical-cell{color:var(--red)}.stale-cell{color:var(--yellow)}.row-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.qty-input{width:64px;min-height:28px;padding:5px 6px}.row-actions .secondary{padding:6px 8px;white-space:nowrap}.flatten-button{border-color:#ff616977;color:var(--red)}.primary.danger{border-color:var(--red);background:#ff61691a;color:var(--red)}dialog#flattenConfirmDialog{width:min(460px,92vw);padding:0;border:1px solid var(--red);border-radius:10px;background:var(--panel);color:var(--text);box-shadow:var(--shadow)}dialog#flattenConfirmDialog::backdrop{background:#000a}dialog#flattenConfirmDialog .settings-body{display:grid;gap:10px;padding:12px}.flatten-warning{color:var(--red)}@media(max-width:560px){.qty-input{width:56px}}
 .attention-summary{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;font:700 9px 'IBM Plex Mono'}.attention-risk-count,.attention-notice-count{padding:3px 6px;border:1px solid var(--line);border-radius:999px;white-space:nowrap}.attention-risk-count.ok{color:var(--green);border-color:#42dfa066}.attention-risk-count.critical{color:var(--red);border-color:#ff616977}.attention-notice-count{color:var(--yellow);border-color:#f2b84b66}.attention-actions{justify-content:flex-end}.attention-actions .text-button:disabled{cursor:not-allowed;color:var(--dim);opacity:.55}.attention-section-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px;padding:7px 2px 4px;color:var(--dim);font:700 9px 'IBM Plex Mono';letter-spacing:.7px}.attention-section-heading:first-child{margin-top:0}.attention-section-heading.critical{color:var(--red)}.attention-section-heading.ok{color:var(--green)}.attention-section-heading.notice{color:var(--yellow);border-top:1px solid var(--line);margin-top:8px;padding-top:12px}.attention-empty-state{margin:0;padding:7px 9px;color:var(--dim);font-size:10px;line-height:1.45}.attention-item{line-height:1.4}.attention-item.notice{border-color:#f2b84b66}.attention-item.notice strong{color:var(--yellow)}.attention-item.critical strong{color:var(--red)}.attention-item .attention-item-meta{color:var(--dim);font:9px 'IBM Plex Mono';opacity:.9}@media(max-width:560px){.attention-summary{align-items:flex-end;flex-direction:column;gap:4px}.attention-actions{justify-content:stretch}.attention-actions .text-button{width:100%;text-align:left}}
+
+/* --- L8 remediation: heading semantics, legible safety text, durable errors --- */
+/* The panel titles are now real <h2>s. Reset the UA's block/margin/size so the
+   flex layout of .panel-title is unchanged from the previous <span>. */
+h1{margin:0;font:700 13px 'IBM Plex Mono';letter-spacing:.6px;color:var(--text)}
+.panel-heading{margin:0;font:inherit;letter-spacing:inherit;color:inherit;display:inline}
+/* Safety-bearing text (PAPER/LIVE, BLOCKED, UNPROTECTED, SUBMISSION_UNKNOWN,
+   column headers) was rendered at 9px monospace. Anything an operator reads to
+   decide whether real money is at risk gets a floor of 11px. */
+.status-pill{font-size:11px !important;padding:4px 8px}
+.panel-heading,.panel-title>span,th,.attention-item-meta,.eyebrow,.attention-summary{font-size:11px !important}
+.mode-badge{font-size:12px}
+.mode-badge.unverified{color:var(--red);border-color:var(--red)}
+.dialog-environment{font:700 12px 'IBM Plex Mono';letter-spacing:.4px}
+.dialog-environment.live{color:var(--red)}
+.dialog-environment.unverified{color:var(--red)}
+.dialog-environment.paper{color:var(--green)}
+/* Broker/operator action failures must not vanish after 3.5s with no history. */
+.operator-errors-panel{margin:0 0 10px;border-color:var(--red)}
+.operator-errors{margin:0;padding:8px 12px;list-style:none;display:grid;gap:6px;max-height:180px;overflow-y:auto}
+.operator-errors li{display:grid;gap:2px;padding:8px;border:1px solid #ff616977;border-radius:5px;background:#ff61690f}
+.operator-errors strong{color:var(--red);font:700 12px 'IBM Plex Mono'}
+.operator-errors small{color:var(--dim);font:11px 'IBM Plex Mono'}
+.ladder-underfunded{display:grid;gap:3px;padding:8px;border:1px solid #f2b84b66;border-radius:5px;background:#f2b84b0f}
+.ladder-underfunded strong{color:var(--yellow)}
+.ladder-underfunded span{color:var(--dim);font-size:11px;line-height:1.45}

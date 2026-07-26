@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-QuickyTrade is an **IBKR-only, paper-first** desktop trading control center — not a signal/strategy generator. It ingests TradingView webhook alerts and manual proposals, durably records them, and submits IBKR orders under strict safety invariants. Live trading is supported only with explicit multi-step operator confirmation (live `U...` account allowlisting, confirmation phrase, and session verification), defaulting strictly to paper execution (`DU...`). Automated trade protection and position lifecycle transitions are fully implemented. Schwab, Robinhood, and built-in/Python strategy execution are out of scope.
+QuickyTrade is an **IBKR-only, paper-first** desktop trading control center — not a signal/strategy generator. It ingests TradingView webhook alerts and manual proposals, durably records them, and submits IBKR orders under strict safety invariants. Live trading is supported only with explicit multi-step operator confirmation (live `U...` account allowlisting, confirmation phrase, and session verification), defaulting strictly to paper execution (`DU...`). Automated trade protection and position lifecycle transitions are implemented, with known gaps documented in `docs/REVIEW_2026-07-25.md` — most importantly there is no automatic entry TTL/cancel-if-unfilled and no end-of-day flatten, and the signal lifecycle in `signal_intents` still ends at `SUBMITTED` (fill/close state lives only on the Python side). Do not read "implemented" as "complete". Schwab, Robinhood, and built-in/Python strategy execution are out of scope.
 
 ## Stack & structure
 

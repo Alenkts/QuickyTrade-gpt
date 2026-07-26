@@ -31,6 +31,13 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
 const TICKER = /^[A-Z][A-Z0-9./-]{0,14}$/;
 const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+// (source, alert_id) is the *sole* durable deduplication key. A bare timestamp
+// carries no strategy, symbol, or direction, so two strategies firing in the
+// same second collide: identical payloads are silently absorbed as a replay,
+// and differing ones raise a spurious conflict. Neither is a correct outcome
+// for two genuinely distinct signals. Require at least one non-timestamp
+// component, per the documented `<strategy>-<TICKER>-<C|P>-<sent_at>` shape.
+const BARE_TIMESTAMP_ALERT_ID = /^[0-9]+$|^\d{4}-\d{2}-\d{2}(?:[T:._-]\d{2})*(?:\.\d+)?Z?$/;
 
 function fail(code, message) {
   throw new WebhookError(code, message, 400);
@@ -72,6 +79,14 @@ export function parseAndValidatePayload(rawBody, {
   maxFutureSkewMs = 30 * 1000,
   maxRiskHintContracts = 100,
   supportedSchemaVersion = LIVE_SCHEMA_VERSION,
+  // ATM_OFFSET is pure listed-strike geometry: no quote, no delta, no premium,
+  // and critically no band check (selection.choose_listed_strike). Accepting it
+  // from the wire hands contract selection to whoever wrote the Pine script and
+  // bypasses the operator's configured strike band entirely -- that is how 5 of
+  // 6 trades in the 07-24 session pinned to the same strike all day. The
+  // untrusted ingress passes false; the manual operator path, where a human
+  // picked the strike deliberately, leaves it true.
+  allowAtmOffsetStrikePolicy = true,
 } = {}) {
   if (!Number.isSafeInteger(maxRiskHintContracts) || maxRiskHintContracts < 1) {
     throw new TypeError('maxRiskHintContracts must be a positive integer');
@@ -110,6 +125,9 @@ export function parseAndValidatePayload(rawBody, {
     fail('UNSUPPORTED_SCHEMA_VERSION', `schema_version must be ${supportedSchemaVersion}`);
   }
   if (!IDENTIFIER.test(value.alert_id)) fail('INVALID_ALERT_ID', 'alert_id has an invalid format');
+  if (BARE_TIMESTAMP_ALERT_ID.test(value.alert_id)) {
+    fail('INVALID_ALERT_ID', 'alert_id must identify the signal, not just its time (e.g. "mystrat-IWM-P-2026-07-24T13:40:00Z")');
+  }
   if (!IDENTIFIER.test(value.strategy_id)) fail('INVALID_STRATEGY_ID', 'strategy_id has an invalid format');
   if (!VERSION.test(value.strategy_version)) fail('INVALID_STRATEGY_VERSION', 'strategy_version has an invalid format');
   if (!ACTIONS.includes(value.action)) fail('INVALID_ACTION', 'action is not supported');
@@ -133,6 +151,10 @@ export function parseAndValidatePayload(rawBody, {
       ? value.strike_policy.type
       : undefined;
     if (policyType === 'ATM_OFFSET') {
+      if (!allowAtmOffsetStrikePolicy) {
+        fail('STRIKE_POLICY_NOT_ALLOWED',
+          'strike_policy ATM_OFFSET is not accepted from TradingView; omit strike_policy and let the app apply its configured strike band');
+      }
       requireExactObject(value.strike_policy, 'strike_policy', ['type', 'offset']);
       if (!Number.isSafeInteger(value.strike_policy.offset)) {
         fail('INVALID_STRIKE_POLICY', 'strike_policy must use ATM_OFFSET with an integer offset');

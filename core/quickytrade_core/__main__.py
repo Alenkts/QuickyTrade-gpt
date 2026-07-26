@@ -68,6 +68,28 @@ def _run_periodic_reconciliation(
         except Exception:
             logger.exception("Periodic reconciliation sweep failed; will retry next interval")
         try:
+            # H7: resolve working protection legs against broker execution
+            # evidence, so the ledger stops holding SUBMITTED legs for
+            # positions that closed hours ago.
+            resolved = engine.reconcile_protection_legs()
+            if resolved["filled"] or resolved["cancelled"]:
+                logger.info(
+                    "Protection reconciliation resolved %d filled and %d OCA-cancelled leg(s)",
+                    resolved["filled"], resolved["cancelled"],
+                )
+        except Exception:
+            logger.exception("Protection-leg reconciliation failed; will retry next interval")
+        try:
+            stale_entries = engine.stale_working_entries()
+            if stale_entries:
+                logger.warning(
+                    "%d app-owned entry order(s) have rested unfilled longer than the signal age budget; "
+                    "a fill now executes a signal this app would itself reject as expired: %s",
+                    len(stale_entries), stale_entries,
+                )
+        except Exception:
+            logger.exception("Stale-entry check failed; will retry next interval")
+        try:
             candidates = ledger.filled_app_managed_correlation_ids()
         except Exception:
             logger.exception("Listing protection/transition candidates failed; will retry next interval")

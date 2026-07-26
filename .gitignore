@@ -16,3 +16,11 @@ graphify-out/
 # resolve it relative to core/ cwd instead of the real home dir, producing
 # this stray runtime artifact.
 core/~/
+
+# Operator scratch notes that have historically contained the live
+# QT_WEBHOOK_SECRET in plaintext (it is pasted into example curl commands).
+# One `git add -A` would otherwise commit the order-submission credential.
+tradingview-readme.yaml
+*-readme.yaml
+*.secrets
+*.secret

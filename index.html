@@ -15,7 +15,7 @@
   <div class="app-shell">
     <header class="topbar">
       <div class="brand">
-        <strong>QUICKYTRADE</strong>
+        <h1>QUICKYTRADE</h1>
         <span>IBKR CONTROL CENTER</span>
       </div>
       <span class="mode-badge" id="environmentBadge">PAPER · LOCKED</span>
@@ -36,10 +36,18 @@
       <span>Alerts can be authenticated and recorded; no broker order can be placed in this mode.</span>
     </section>
 
+    <section class="panel operator-errors-panel" id="operatorErrorsPanel" aria-labelledby="h-action-failures" hidden>
+      <div class="panel-title">
+        <h2 class="panel-heading" id="h-action-failures">ACTION FAILURES</h2>
+        <button class="secondary" id="clearOperatorErrors" type="button">CLEAR ALL</button>
+      </div>
+      <ul class="operator-errors" id="operatorErrors" role="alert" aria-live="assertive"></ul>
+    </section>
+
     <main class="dashboard">
       <aside class="side-stack">
-        <section class="panel ingress-card">
-          <div class="panel-title"><span>TRADINGVIEW INGRESS</span><span class="status-pill" id="ingressPill">CHECKING</span></div>
+        <section class="panel ingress-card" aria-labelledby="h-tradingview-ingress">
+          <div class="panel-title"><h2 class="panel-heading" id="h-tradingview-ingress">TRADINGVIEW INGRESS</h2><span class="status-pill" id="ingressPill">CHECKING</span></div>
           <div class="panel-body">
             <p class="eyebrow">LOCAL ENDPOINT</p>
             <code id="webhookEndpoint">http://127.0.0.1:4180/webhooks/tradingview</code>
@@ -53,19 +61,19 @@
           </div>
         </section>
 
-        <section class="panel readiness-card">
-          <div class="panel-title"><span>READINESS</span><span id="readinessCount">0 / 4</span></div>
+        <section class="panel readiness-card" aria-labelledby="h-readiness">
+          <div class="panel-title"><h2 class="panel-heading" id="h-readiness">READINESS</h2><span id="readinessCount">0 / 4</span></div>
           <ul class="check-list" id="readinessList"></ul>
         </section>
 
-        <section class="panel reconciliation-card" title="Reflects GET /api/reconciliation -- an unresolved submission, protection, or management-transition outcome globally blocks new opens until it is reconciled.">
-          <div class="panel-title"><span>WHY IS THIS BLOCKED?</span><span class="status-pill" id="reconciliationPill">CHECKING</span></div>
+        <section class="panel reconciliation-card" aria-labelledby="h-why-is-this-blocked" title="Reflects GET /api/reconciliation -- an unresolved submission, protection, or management-transition outcome globally blocks new opens until it is reconciled.">
+          <div class="panel-title"><h2 class="panel-heading" id="h-why-is-this-blocked">WHY IS THIS BLOCKED?</h2><span class="status-pill" id="reconciliationPill">CHECKING</span></div>
           <ul class="check-list" id="reconciliationList"></ul>
         </section>
 
-        <section class="panel attention-card">
+        <section class="panel attention-card" aria-labelledby="h-attention">
           <div class="panel-title">
-            <span>ATTENTION</span>
+            <h2 class="panel-heading" id="h-attention">ATTENTION</h2>
             <span class="attention-summary" aria-live="polite">
               <span class="attention-risk-count" id="attentionRiskCount">CHECKING RISKS</span>
               <span class="attention-notice-count" id="attentionNoticeCount">0 NOTICES</span>
@@ -81,9 +89,9 @@
       </aside>
 
       <section class="main-stack">
-        <section class="panel trade-desk-panel">
+        <section class="panel trade-desk-panel" aria-labelledby="h-manual-trade-desk">
           <div class="panel-title">
-            <div><span>MANUAL TRADE DESK</span><small>Creates a durable, reviewed intent; it never bypasses the shared IBKR controls.</small></div>
+            <div><h2 class="panel-heading" id="h-manual-trade-desk">MANUAL TRADE DESK</h2><small>Creates a durable, reviewed intent; it never bypasses the shared IBKR controls.</small></div>
             <div class="panel-actions"><span class="status-pill blocked" id="manualDeskStatus">NOT READY</span><button class="secondary" id="toggleManualTrade" type="button" aria-expanded="false" aria-controls="manualTradeForm">NEW MANUAL PROPOSAL</button></div>
           </div>
           <p class="manual-desk-summary" id="manualDeskSummary">New entries are blocked until a verified profile and manual-intent service are available.</p>
@@ -125,8 +133,8 @@
           </form>
         </section>
 
-        <section class="panel active-trades-panel">
-          <div class="panel-title"><div><span>ACTIVE POSITIONS</span><small>Broker-confirmed fills only. Only app-owned positions may be closed here.</small></div><button class="secondary" id="refreshActiveTrades" type="button">REFRESH</button></div>
+        <section class="panel active-trades-panel" aria-labelledby="h-active-positions">
+          <div class="panel-title"><div><h2 class="panel-heading" id="h-active-positions">ACTIVE POSITIONS</h2><small>Broker-confirmed fills only. Only app-owned positions may be closed here.</small></div><button class="secondary" id="refreshActiveTrades" type="button">REFRESH</button></div>
           <div class="positions-status-row" id="positionsStatusRow" aria-live="polite">
             <span class="status-pill" id="positionsStatusPill">CHECKING</span>
             <span id="positionsStatusNote">Waiting for the first broker-confirmed positions read.</span>
@@ -140,8 +148,8 @@
           <div class="allocation-grid" id="allocationGrid" aria-live="polite"></div>
         </section>
 
-        <section class="panel closed-trades-panel">
-          <div class="panel-title"><div><span>CLOSED POSITIONS — TODAY</span><small>Read-only broker-confirmed positions closed during the New York market day.</small></div><button class="secondary" id="refreshClosedTrades" type="button">REFRESH</button></div>
+        <section class="panel closed-trades-panel" aria-labelledby="h-closed-positions-today">
+          <div class="panel-title"><div><h2 class="panel-heading" id="h-closed-positions-today">CLOSED POSITIONS — TODAY</h2><small>Read-only broker-confirmed positions closed during the New York market day.</small></div><button class="secondary" id="refreshClosedTrades" type="button">REFRESH</button></div>
           <div class="positions-status-row" aria-live="polite">
             <span class="status-pill" id="closedPositionsStatusPill">CHECKING</span>
             <span id="closedPositionsStatusNote">Waiting for broker-confirmed closed-position data.</span>
@@ -154,13 +162,13 @@
           </div>
         </section>
 
-        <section class="panel alerts-panel">
+        <section class="panel alerts-panel" aria-labelledby="h-alert-activity">
           <div class="panel-title">
-            <div><span>ALERT ACTIVITY</span><small>TradingView → durable intent → IBKR</small></div>
+            <div><h2 class="panel-heading" id="h-alert-activity">ALERT ACTIVITY</h2><small>TradingView → durable intent → IBKR</small></div>
             <button class="secondary" id="refreshAlerts">REFRESH</button>
           </div>
           <div class="alert-filters" aria-label="Alert activity filters">
-            <label>State<select id="alertStateFilter" class="control"><option value="ALL">All states</option><option value="ATTENTION">Needs attention</option><option value="READY">Received</option><option value="PROCESSING">Processing</option><option value="SUBMITTED">Submitted</option><option value="BLOCKED">Blocked</option><option value="FAILED">Failed</option><option value="SUBMISSION_UNKNOWN">Submission unknown</option></select></label>
+            <label>State<select id="alertStateFilter" class="control"><option value="ALL">All states</option><option value="ATTENTION">Needs attention</option><option value="READY">Received</option><option value="PROCESSING">Processing</option><option value="SUBMITTED">Submitted</option><option value="BLOCKED">Blocked</option><option value="FAILED">Failed</option><option value="EXPIRED">Expired in queue</option><option value="SUBMISSION_UNKNOWN">Submission unknown</option></select></label>
             <label>Symbol<input id="alertSymbolFilter" class="control" autocomplete="off" placeholder="SPY"></label>
             <label>Trading day (New York)<input id="alertDateFilter" class="control" type="date" disabled title="Alert Activity is intentionally limited to today's New York market date."></label>
             <button class="secondary" id="clearAlertFilters" type="button">CLEAR FILTERS</button>
@@ -174,9 +182,9 @@
           </div>
         </section>
 
-        <section class="panel detail-panel">
+        <section class="panel detail-panel" aria-labelledby="h-order-lifecycle">
           <div class="panel-title">
-            <div><span>ORDER LIFECYCLE</span><small id="selectedCorrelation">Select an alert</small></div>
+            <div><h2 class="panel-heading" id="h-order-lifecycle">ORDER LIFECYCLE</h2><small id="selectedCorrelation">Select an alert</small></div>
             <span class="status-pill" id="selectedStatus">NO SELECTION</span>
           </div>
           <div class="detail-empty" id="detailEmpty">
@@ -196,14 +204,14 @@
       </section>
     </main>
 
-    <dialog id="settingsDialog" class="settings-dialog">
+    <dialog id="settingsDialog" class="settings-dialog" aria-labelledby="h-settings">
       <div class="panel-title">
-        <span>SETTINGS</span>
+        <h2 class="panel-heading" id="h-settings">SETTINGS</h2>
         <button class="text-button" id="closeSettings" type="button">CLOSE ✕</button>
       </div>
       <div class="settings-body">
-        <section class="panel profiles-card">
-          <div class="panel-title"><span>IBKR CONNECTION PROFILE</span><span class="status-pill" id="profilePill">LOADING</span></div>
+        <section class="panel profiles-card" aria-labelledby="h-ibkr-connection-profile">
+          <div class="panel-title"><h2 class="panel-heading" id="h-ibkr-connection-profile">IBKR CONNECTION PROFILE</h2><span class="status-pill" id="profilePill">LOADING</span></div>
           <div class="panel-body">
             <label class="field-label" for="profileSelect">Named profile</label>
             <select id="profileSelect" class="control" disabled><option>Loading profiles…</option></select>
@@ -215,14 +223,15 @@
               <label>Verified account<input id="profileAccount" class="control" readonly value="Unavailable"></label>
               <label>Capital per trade ($)<input id="profileCapitalPerTrade" class="control" inputmode="decimal" placeholder="e.g. 500" disabled></label>
             </div>
-            <button class="secondary wide" id="saveProfile" type="button" disabled>SAVE CONNECTION SETTINGS</button>
+            <button class="secondary wide" id="saveProfile" type="button" disabled>SAVE PROFILE (DOES NOT RECONNECT)</button>
+            <p class="field-note"><strong>Host, socket port, and client ID describe the core this profile expects to be talking to — saving them does not move a running core.</strong> The connected core keeps its current host and port until it is restarted from TWS CORE PROCESS below.</p>
             <p class="field-note" id="profileNote">Profile details are unavailable until the execution service responds.</p>
-            <p class="field-note">Capital per trade sets contracts = floor(capital ÷ the option's fresh mid-price) for this profile's manual entries. Leave blank to keep the pre-existing default of one contract. The core additionally clamps this to its own deployment-configured contract ceiling regardless of what this amount implies.</p>
+            <p class="field-note">Capital per trade sets contracts = floor(capital ÷ (the option's fresh mid-price × the contract multiplier)) for this profile's manual entries. Leave blank to keep the pre-existing default of one contract. The core additionally clamps this to its own deployment-configured contract ceiling regardless of what this amount implies.</p>
           </div>
         </section>
 
-        <section class="panel core-process-panel">
-          <div class="panel-title"><span>TWS CORE PROCESS</span><span class="status-pill" id="coreProcessPill">UNKNOWN</span></div>
+        <section class="panel core-process-panel" aria-labelledby="h-tws-core-process">
+          <div class="panel-title"><h2 class="panel-heading" id="h-tws-core-process">TWS CORE PROCESS</h2><span class="status-pill" id="coreProcessPill">UNKNOWN</span></div>
           <div class="panel-body">
             <dl class="facts">
               <div><dt>State</dt><dd id="coreProcessState">Unavailable</dd></div>
@@ -240,8 +249,8 @@
           </div>
         </section>
 
-        <section class="panel strike-selection-panel">
-          <div class="panel-title"><span>STRIKE SELECTION (0DTE)</span><span class="status-pill" id="strikeSelectionPill">UNAVAILABLE</span></div>
+        <section class="panel strike-selection-panel" aria-labelledby="h-strike-selection-0dte">
+          <div class="panel-title"><h2 class="panel-heading" id="h-strike-selection-0dte">STRIKE SELECTION (0DTE)</h2><span class="status-pill" id="strikeSelectionPill">UNAVAILABLE</span></div>
           <div class="panel-body">
             <dl class="facts">
               <div><dt>Metric</dt><dd id="strikeMetric">Unavailable</dd></div>
@@ -252,8 +261,8 @@
           </div>
         </section>
 
-        <section class="panel management-settings-panel">
-          <div class="panel-title"><div><span>TRADE MANAGEMENT DEFAULTS</span><small>Manual and TradingView may default differently; every trade can override this choice before submission.</small></div><button class="secondary" id="saveManagementDefaults" type="button" disabled>SAVE DEFAULTS</button></div>
+        <section class="panel management-settings-panel" aria-labelledby="h-trade-management-defaults">
+          <div class="panel-title"><div><h2 class="panel-heading" id="h-trade-management-defaults">TRADE MANAGEMENT DEFAULTS</h2><small>Manual and TradingView may default differently; every trade can override this choice before submission.</small></div><button class="secondary" id="saveManagementDefaults" type="button" disabled>SAVE DEFAULTS</button></div>
           <div class="management-settings">
             <label>Manual default<select id="manualDefaultMode" class="control" disabled><option value="APP_MANAGED">App managed</option><option value="USER_MANAGED">Track only</option></select></label>
             <label>TradingView default<select id="tradingviewDefaultMode" class="control" disabled><option value="APP_MANAGED">App managed</option><option value="USER_MANAGED">Track only</option><option value="TRADINGVIEW_MANAGED">TradingView-managed exits</option></select></label>
@@ -262,8 +271,8 @@
           </div>
         </section>
 
-        <section class="panel scope-panel">
-          <div class="panel-title"><span>SUPPORTED PAPER SCOPE</span><span>LONG PREMIUM ONLY</span></div>
+        <section class="panel scope-panel" aria-labelledby="h-supported-paper-scope">
+          <div class="panel-title"><h2 class="panel-heading" id="h-supported-paper-scope">SUPPORTED PAPER SCOPE</h2><span>LONG PREMIUM ONLY</span></div>
           <div class="scope-grid">
             <div><strong>APP-MANAGED</strong><span>Creates and maintains the configured protection only after acknowledged, reconciled app-owned fills.</span></div>
             <div><strong>TRACK ONLY</strong><span>Records intent, order and fill lifecycle. It does not create, cancel or modify exits.</span></div>
@@ -273,12 +282,13 @@
       </div>
     </dialog>
 
-    <dialog id="flattenConfirmDialog" class="flatten-dialog">
+    <dialog id="flattenConfirmDialog" class="flatten-dialog" aria-labelledby="h-confirm-flatten">
       <div class="panel-title">
-        <span>CONFIRM FLATTEN</span>
+        <h2 class="panel-heading" id="h-confirm-flatten">CONFIRM FLATTEN</h2>
         <button class="text-button" id="closeFlattenDialog" type="button">CLOSE ✕</button>
       </div>
       <div class="settings-body">
+        <p class="field-note dialog-environment" id="flattenEnvironment">ENVIRONMENT: UNVERIFIED</p>
         <p class="field-note" id="flattenSummary">Unavailable</p>
         <p class="field-note flatten-warning"><strong>This cancels every working protection leg on this position, then sells the entire verified remaining quantity as one reduce-only order. This cannot be undone.</strong></p>
         <label class="field-label" for="flattenConfirmInput">Type FLATTEN to confirm</label>
@@ -290,12 +300,13 @@
       </div>
     </dialog>
 
-    <dialog id="partialCloseConfirmDialog" class="flatten-dialog">
+    <dialog id="partialCloseConfirmDialog" class="flatten-dialog" aria-labelledby="h-confirm-partial-close">
       <div class="panel-title">
-        <span>CONFIRM PARTIAL CLOSE</span>
+        <h2 class="panel-heading" id="h-confirm-partial-close">CONFIRM PARTIAL CLOSE</h2>
         <button class="text-button" id="closePartialDialog" type="button">CLOSE ✕</button>
       </div>
       <div class="settings-body">
+        <p class="field-note dialog-environment" id="partialCloseEnvironment">ENVIRONMENT: UNVERIFIED</p>
         <p class="field-note" id="partialCloseSummary">Unavailable</p>
         <p class="field-note flatten-warning"><strong>This submits a reduce-only sell for the requested quantity. Fills cannot be undone.</strong></p>
         <div class="form-actions-buttons">

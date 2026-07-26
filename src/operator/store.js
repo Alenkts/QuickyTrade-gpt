@@ -234,6 +234,16 @@ export class OperatorStore {
     return row ? this.#profile(row) : null;
   }
 
+  // The operator's currently selected connection profile, or null. The schema
+  // guarantees at most one (`one_selected_connection_profile`), and #ensureSeed
+  // selects `paper-tws` when a fresh database has none -- but this must still
+  // tolerate null rather than assume, because callers use it to derive
+  // capital-per-trade for a real order and a wrong default is worse than none.
+  getSelectedProfile() {
+    const row = this.db.prepare('SELECT * FROM connection_profiles WHERE selected=1').get();
+    return row ? this.#profile(row) : null;
+  }
+
   #profile(row) {
     return {
       id: row.id,

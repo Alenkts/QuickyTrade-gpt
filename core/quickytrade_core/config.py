@@ -54,6 +54,12 @@ class CoreConfig:
     # rather than silently accepting economics the policy cannot express.
     # Entries only -- never applied to a close, protection leg, or trail.
     min_entry_premium: Decimal = Decimal("1.00")
+    # How far the option's mid may move between the quote that determined the
+    # strike, the size, and every protection level, and the re-validation
+    # immediately before placeOrder. Expressed against the order's own limit
+    # price. A larger move blocks rather than submitting a trade whose size and
+    # protection were derived from a price that no longer exists.
+    max_entry_quote_drift_percent: Decimal = Decimal("0.25")
     # Declaration-only: the per-trade capital budget the operator intends to
     # inject with each open (from the Node connection profile's
     # capital_per_trade_dollars). The core never sizes from this value -- it
@@ -164,6 +170,34 @@ class CoreConfig:
             raise ValueError("strike_candidate_count must be from 1 through 50")
         if self.reconciliation_interval_seconds <= 0:
             raise ValueError("reconciliation_interval_seconds must be positive")
+        if self.min_entry_premium < 0:
+            raise ValueError("min_entry_premium must not be negative")
+        if not 0 < self.max_entry_quote_drift_percent <= 1:
+            raise ValueError("max_entry_quote_drift_percent must be greater than 0 and at most 1")
+        if isinstance(self.max_contracts_per_order, bool) or not isinstance(self.max_contracts_per_order, int):
+            raise ValueError("max_contracts_per_order must be an integer")
+        if self.max_contracts_per_order < 1:
+            raise ValueError("max_contracts_per_order must be at least 1")
+        if self.expected_capital_per_trade_dollars is not None:
+            # The whole point of declaring the budget: catch the deployment
+            # where the operator has configured, say, $3,000 per trade on the
+            # Node side while this core is still at its conservative ceiling of
+            # one contract. That combination silently deploys a fraction of the
+            # authorized capital (observed: 16.4% utilization across a session)
+            # and the ceiling in force depends on how the core was launched --
+            # app-spawned it inherits the root .env, standalone it does not.
+            if self.expected_capital_per_trade_dollars <= 0:
+                raise ValueError("expected_capital_per_trade_dollars must be positive")
+            affordable = int(self.expected_capital_per_trade_dollars / (self.min_entry_premium * 100)) \
+                if self.min_entry_premium > 0 else self.max_contracts_per_order
+            if affordable > self.max_contracts_per_order:
+                raise ValueError(
+                    "expected_capital_per_trade_dollars "
+                    f"({self.expected_capital_per_trade_dollars}) could fund up to {affordable} contracts at the "
+                    f"minimum entry premium, but max_contracts_per_order is {self.max_contracts_per_order}. "
+                    "Set QT_MAX_CONTRACTS_PER_ORDER explicitly in this core's own environment so the effective "
+                    "ceiling does not depend on how the core was launched."
+                )
 
     @classmethod
     def from_environment(cls) -> CoreConfig:
@@ -195,6 +229,12 @@ class CoreConfig:
             # QT_MAX_CONTRACTS_PER_ORDER, behavior is unchanged from before this
             # release (one contract per order).
             max_contracts_per_order=int(os.environ.get("QT_MAX_CONTRACTS_PER_ORDER", "1")),
+            min_entry_premium=Decimal(os.environ.get("QT_MIN_ENTRY_PREMIUM", "1.00")),
+            max_entry_quote_drift_percent=Decimal(os.environ.get("QT_MAX_ENTRY_QUOTE_DRIFT_PERCENT", "0.25")),
+            expected_capital_per_trade_dollars=(
+                Decimal(os.environ["QT_EXPECTED_CAPITAL_PER_TRADE_DOLLARS"])
+                if os.environ.get("QT_EXPECTED_CAPITAL_PER_TRADE_DOLLARS") else None
+            ),
             reconciliation_interval_seconds=float(os.environ.get("QT_RECONCILE_INTERVAL_SECONDS", "45")),
         )
         config.validate()

@@ -568,3 +568,65 @@ class ProtectionPlacementTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProtectionLegReconciliationTests(ProtectionPlacementTests):
+    """H7: 18 SUBMITTED protection legs against 9 CLOSED positions.
+
+    Nothing ever moved a leg off SUBMITTED, so the ledger could not answer
+    "is this position actually still protected?".
+    """
+
+    def test_a_leg_with_broker_execution_evidence_resolves_to_filled(self):
+        correlation_id = "manual:leg-recon-filled"
+        self._seed(correlation_id, quantity=2, fill_price="1.00")
+        self.engine.ensure_protection(correlation_id)
+        legs = self.protection_ledger.legs_for_correlation(correlation_id)
+        working = [leg for leg in legs if leg["status"] == "SUBMITTED"]
+        self.assertTrue(working, "expected the fixture to place working legs")
+        target = working[0]
+
+        self.ledger.record_execution(_leg_execution("x-leg-1", target["order_ref"]))
+        resolved = self.engine.reconcile_protection_legs()
+
+        self.assertEqual(1, resolved["filled"])
+        self.assertEqual("FILLED", self.protection_ledger.get(target["protection_id"])["status"])
+
+    def test_the_oca_sibling_of_a_filled_leg_resolves_to_cancelled(self):
+        correlation_id = "manual:leg-recon-oca"
+        self._seed(correlation_id, quantity=2, fill_price="1.00")
+        self.engine.ensure_protection(correlation_id)
+        legs = [leg for leg in self.protection_ledger.legs_for_correlation(correlation_id)
+                if leg["status"] == "SUBMITTED" and leg["oca_group"]]
+        groups = {}
+        for leg in legs:
+            groups.setdefault(leg["oca_group"], []).append(leg)
+        pair = next((members for members in groups.values() if len(members) >= 2), None)
+        self.assertIsNotNone(pair, "expected an OCA take-profit/stop pair")
+
+        self.ledger.record_execution(_leg_execution("x-leg-2", pair[0]["order_ref"]))
+        resolved = self.engine.reconcile_protection_legs()
+
+        self.assertEqual("FILLED", self.protection_ledger.get(pair[0]["protection_id"])["status"])
+        self.assertEqual("CANCELLED", self.protection_ledger.get(pair[1]["protection_id"])["status"])
+        self.assertEqual(1, resolved["cancelled"])
+
+    def test_a_leg_with_no_execution_evidence_is_left_alone_never_guessed(self):
+        correlation_id = "manual:leg-recon-untouched"
+        self._seed(correlation_id, quantity=2, fill_price="1.00")
+        self.engine.ensure_protection(correlation_id)
+        before = [leg["status"] for leg in self.protection_ledger.legs_for_correlation(correlation_id)]
+
+        resolved = self.engine.reconcile_protection_legs()
+
+        after = [leg["status"] for leg in self.protection_ledger.legs_for_correlation(correlation_id)]
+        self.assertEqual(before, after, "absence of an order is not evidence of a fill or a cancel")
+        self.assertEqual({"filled": 0, "cancelled": 0}, resolved)
+
+
+def _leg_execution(exec_id: str, order_ref: str) -> ExecutionRecord:
+    return ExecutionRecord(
+        exec_id=exec_id, order_ref=order_ref, order_id=800, perm_id=901, account="DU12345",
+        con_id=201, symbol="QQQ", side="SLD", shares="1", price="1.20", cum_qty="1", avg_price="1.20",
+        exec_time="20260720 10:05:00 US/Eastern", source="LIVE_CALLBACK", raw={"execId": exec_id},
+    )

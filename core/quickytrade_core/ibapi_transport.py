@@ -148,6 +148,21 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
         self.ledger = ledger
         self.clock = clock
         self._lock = threading.RLock()
+        # _lock is fine-grained and is taken by EWrapper callbacks on the TWS
+        # reader thread; it must never be held across a network round trip or
+        # the reader deadlocks. _snapshot_lock is the coarse lock that makes
+        # "clear, request, wait, read" one atomic operation for a caller.
+        #
+        # Without it, three threads reach _refresh_positions concurrently --
+        # the reconciliation sweep, every ThreadingHTTPServer request thread
+        # serving /positions, and the submission path (only the last holds the
+        # engine's _execution_lock). A second thread rebinding self._positions
+        # to [] in the window between the first thread's wait() returning and
+        # its comprehension gives the first thread a short read. That is not
+        # cosmetic: a short read makes _block_duplicate_exposure silently
+        # permit a duplicate entry, and inflates the reduce-only bound in
+        # _fresh_working_exit_quantity. Both are AGENTS.md non-negotiables.
+        self._snapshot_lock = threading.RLock()
         self._handshake = threading.Event()
         self._server_time = threading.Event()
         self._managed_accounts_event = threading.Event()
@@ -193,8 +208,9 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
         if not self._managed_accounts_event.wait(timeout) or not self._server_time.wait(timeout):
             self.disconnect()
             raise RuntimeError("IBKR managed-account/server-time readiness timed out")
-        self._refresh_positions()
-        self._refresh_working_orders()
+        with self._snapshot_lock:
+            self._refresh_positions()
+            self._refresh_working_orders()
         self.reconcile("STARTUP")
         self._reconciled = True
 
@@ -282,10 +298,20 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
 
     def quote(self, contract: QualifiedContract) -> Quote:
         request_id, pending = self._new_request()
+        # market_data_type starts UNKNOWN, not "LIVE". Seeding it optimistically
+        # meant a subscription that never produced a marketDataType callback --
+        # or produced FROZEN/DELAYED after this dict was read -- still presented
+        # as live evidence. IBKR is asked explicitly for live data below, and
+        # validate_quote refuses anything that is not affirmatively LIVE.
         pending.values.append({
             "bid": None, "ask": None, "delta": None,
-            "market_data_type": "LIVE", "received_at": self.clock(),
+            "market_data_type": "UNKNOWN", "received_at": self.clock(),
+            "subscribed_at": self.clock(),
         })
+        # Force live data (type 1) so marketDataType() fires and the frozen /
+        # delayed fallbacks IBKR may otherwise substitute are visible rather
+        # than silently priced as if they were live.
+        self.reqMarketDataType(1)
         # Generic tick 106 requests option-computation ticks (tickOptionComputation,
         # including delta) alongside the plain bid/ask; IBKR ignores it for non-option
         # contracts, so it is safe to request unconditionally. IBKR rejects snapshot=True
@@ -315,12 +341,16 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
         return tuple(pending.values)
 
     def positions(self, account: str) -> tuple[Position, ...]:
-        self._refresh_positions()
-        return tuple(position for position in self._positions if position.account == account)
+        with self._snapshot_lock:
+            self._refresh_positions()
+            with self._lock:
+                return tuple(position for position in self._positions if position.account == account)
 
     def working_orders(self, account: str) -> tuple[WorkingOrder, ...]:
-        self._refresh_working_orders()
-        return tuple(order for order in self._working_orders.values() if order.account == account)
+        with self._snapshot_lock:
+            self._refresh_working_orders()
+            with self._lock:
+                return tuple(order for order in self._working_orders.values() if order.account == account)
 
     def place_limit_order(self, request: LimitOrderRequest) -> BrokerAcknowledgement:
         order = self._base_order(
@@ -499,8 +529,9 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
         # Fresh position evidence for the cross-day fallback below -- IBKR is
         # always re-queried rather than trusting whatever self._positions held
         # before this sweep began.
-        self._refresh_positions()
-        flagged = self._flag_unattributed_positions()
+        with self._snapshot_lock:
+            self._refresh_positions()
+            flagged = self._flag_unattributed_positions()
         if flagged:
             logger.warning(
                 "Reconciliation sweep (%s) found %d unattributed broker position(s) with no "
@@ -602,11 +633,12 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
             con_id = contract.get("con_id")
             if not con_id:
                 continue
-            live_quantity = sum(
-                (position.quantity for position in self._positions
-                 if position.account == row["account"] and position.contract.con_id == con_id),
-                Decimal("0"),
-            )
+            with self._lock:
+                live_quantity = sum(
+                    (position.quantity for position in self._positions
+                     if position.account == row["account"] and position.contract.con_id == con_id),
+                    Decimal("0"),
+                )
             if live_quantity != 0 and not self.ledger.executions_for_con_id(con_id):
                 flagged.append({
                     "correlation_id": row["correlation_id"],
@@ -776,7 +808,7 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
         if raw_status not in TERMINAL_ORDER_STATUSES:
             quantity = getattr(order, "totalQuantity", None)
             remaining = Decimal(str(quantity)) if quantity is not None else None
-            self._working_orders[int(orderId)] = WorkingOrder(
+            new_working = WorkingOrder(
                 account=str(getattr(order, "account", "")),
                 contract=_qualified_contract_only(contract),
                 action=str(getattr(order, "action", "")),
@@ -787,6 +819,8 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
                 order_ref=str(getattr(order, "orderRef", "")),
                 raw_status=raw_status,
             )
+            with self._lock:
+                self._working_orders[int(orderId)] = new_working
         with self._lock:
             ack = self._order_acks.get(int(orderId))
         if ack and raw_status in ACK_STATUSES:
@@ -814,14 +848,15 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
         if cancel_ack and str(status) in TERMINAL_ORDER_STATUSES:
             cancel_ack.raw_status = str(status)
             cancel_ack.event.set()
-        working = self._working_orders.get(int(orderId))
-        if working:
-            if str(status) in TERMINAL_ORDER_STATUSES:
-                self._working_orders.pop(int(orderId), None)
-            else:
-                self._working_orders[int(orderId)] = WorkingOrder(
-                    **{**working.__dict__, "remaining": Decimal(str(remaining)), "raw_status": str(status)}
-                )
+        with self._lock:
+            working = self._working_orders.get(int(orderId))
+            if working:
+                if str(status) in TERMINAL_ORDER_STATUSES:
+                    self._working_orders.pop(int(orderId), None)
+                else:
+                    self._working_orders[int(orderId)] = WorkingOrder(
+                        **{**working.__dict__, "remaining": Decimal(str(remaining)), "raw_status": str(status)}
+                    )
 
     def execDetails(self, reqId: int, contract, execution) -> None:  # noqa: N802
         # Fired both unsolicited (a real-time fill, on whatever reqId IBKR

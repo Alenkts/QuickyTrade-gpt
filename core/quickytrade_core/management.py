@@ -180,7 +180,21 @@ def validate_management_policy(value: Any) -> dict[str, Any]:
     }
 
     if "stopCoveragePercent" in value:
+        # Parsed, validated, stored, and wired all the way from the operator UI
+        # through server.mjs to here -- and then read by nothing in engine.py.
+        # Every stop leg covers its level's full allocated quantity regardless
+        # of what this says. Rather than continue to accept a risk setting that
+        # silently does nothing, reject it: an operator who sets stop coverage
+        # to 50% and gets 100% coverage has been told something untrue about
+        # their own risk. Remove this rejection when the engine actually
+        # implements partial stop coverage.
         coverage = _percent(value["stopCoveragePercent"], "stopCoveragePercent", maximum=Decimal("100"))
+        if coverage != Decimal("100"):
+            raise ManagementContractError(
+                "STOP_COVERAGE_UNSUPPORTED",
+                "stopCoveragePercent other than 100 is not implemented; every stop leg covers its "
+                "level's full allocated quantity",
+            )
         result["stopCoveragePercent"] = _decimal_text(coverage)
 
     if "transitions" in value:

@@ -73,6 +73,46 @@ function notify(message) {
   state.toastTimer = setTimeout(() => toast.classList.remove('show'), 3500);
 }
 
+// Failures of broker or operator actions (flatten, partial close, manual
+// submit, profile save, core start/stop) are recorded here rather than only
+// flashed as a toast. A toast auto-dismisses in 3.5 seconds and keeps no
+// history, which is not an acceptable way to report that a FLATTEN did not go
+// through. The toast still fires for immediacy; this is the durable record.
+const operatorErrors = [];
+
+function notifyFailure(action, message, context = {}) {
+  operatorErrors.unshift({
+    action,
+    message: String(message || 'Unknown failure'),
+    context,
+    at: new Date().toISOString(),
+  });
+  if (operatorErrors.length > 50) operatorErrors.length = 50;
+  renderOperatorErrors();
+  notify(message);
+}
+
+function renderOperatorErrors() {
+  const panel = $('#operatorErrorsPanel');
+  const list = $('#operatorErrors');
+  panel.hidden = operatorErrors.length === 0;
+  clear(list);
+  for (const failure of operatorErrors) {
+    const item = document.createElement('li');
+    const title = document.createElement('strong');
+    title.textContent = failure.action;
+    const body = document.createElement('span');
+    body.textContent = failure.message;
+    const meta = document.createElement('small');
+    const parts = [formatMarketTime(failure.at)];
+    if (failure.context.correlationId) parts.push(failure.context.correlationId);
+    if (failure.context.code) parts.push(failure.context.code);
+    meta.textContent = parts.filter(Boolean).join(' · ');
+    item.append(title, body, meta);
+    list.append(item);
+  }
+}
+
 function display(value) {
   return value === null || value === undefined || value === '' ? 'Unavailable' : String(value);
 }
@@ -82,11 +122,10 @@ function short(value, length = 12) {
   return text.length > length ? `${text.slice(0, length)}…` : text;
 }
 
-function formatTime(value) {
-  if (!value) return 'Unavailable';
-  const date = new Date(value);
-  return Number.isFinite(date.getTime()) ? date.toLocaleTimeString() : 'Unavailable';
-}
+// Deliberately removed: an unlabelled browser-local formatter. It rendered the
+// same timestamp in a different zone from the adjacent NY-labelled column with
+// nothing to say so, which is a misreading hazard for an operator outside ET.
+// Every timestamp in this app now goes through formatMarketTime.
 
 function formatMarketTime(value) {
   if (!value) return 'Unavailable';
@@ -110,6 +149,18 @@ function marketDate(value) {
 
 const ATTENTION_ACK_STORAGE_KEY = 'quickytrade.attentionAcknowledgements.v1';
 const CLEARABLE_ATTENTION_STATES = new Set(['BLOCKED', 'FAILED']);
+// Reason codes that must be surfaced as an ACTIVE RISK even though they arrive
+// on a BLOCKED alert. An expired signal means a real entry was dropped: the
+// operator needs to see it against the chart, not dismiss it as history.
+const NON_CLEARABLE_REASON_CODES = new Set(['SIGNAL_EXPIRED', 'EXCEEDED_MAX_AGE_IN_QUEUE']);
+
+// A notice may only be acknowledged away when it is a definitive, already-
+// handled refusal. An EXPIRED intent, or a BLOCKED one whose reason is an
+// expiry, means a real entry was silently dropped -- it stays an ACTIVE RISK.
+function isClearableAttention(alert) {
+  if (!CLEARABLE_ATTENTION_STATES.has(alert.status)) return false;
+  return !NON_CLEARABLE_REASON_CODES.has(alert.order?.errorCode);
+}
 
 function attentionAcknowledgementKey(alert) {
   return `${alert.correlationId}:${alert.status}:${alert.updatedAt || alert.createdAt || 'unknown'}`;
@@ -156,7 +207,8 @@ function statusClass(status) {
   if (['FILLED', 'PROTECTED'].includes(status)) return 'ok';
   if (['SUBMITTED', 'ACCEPTED', 'PARTIALLY_FILLED', 'PROCESSING'].includes(status)) return 'working';
   if (status === 'BLOCKED') return 'blocked';
-  if (['FAILED', 'REJECTED', 'STALE', 'UNPROTECTED', 'SUBMISSION_UNKNOWN'].includes(status)) return 'critical';
+  if (status === 'INERT') return 'blocked';
+  if (['FAILED', 'EXPIRED', 'UNPROTECTED', 'SUBMISSION_UNKNOWN'].includes(status)) return 'critical';
   return 'queued';
 }
 
@@ -171,6 +223,9 @@ function attentionReason(alert) {
   }
   if (code === 'SAME_DAY_ENTRY_CUTOFF') {
     return 'Entry arrived after the same-day cutoff. No order was sent and no action is required.';
+  }
+  if (alert.status === 'EXPIRED' || NON_CLEARABLE_REASON_CODES.has(code)) {
+    return `${symbol} signal expired before it could be submitted, so no order was sent and this entry was silently skipped. Repeated expiries mean alerts are arriving faster than the core can accept them -- check ingress latency and core readiness against the chart.`;
   }
   if (alert.status === 'BLOCKED') {
     return `A safety check blocked this signal${code ? ` (${code})` : ''}. No order was sent.`;
@@ -200,6 +255,26 @@ function setText(selector, value) {
 function setValue(selector, value) {
   const control = $(selector);
   control.value = value === null || value === undefined ? '' : String(value);
+}
+
+// The dashboard re-renders on a 3s poll. Writing to an input the operator is
+// currently editing silently reverts their typing -- they then press SAVE
+// believing they changed a host/port/capital value and write back the old one.
+// A control is left alone while it has focus or has been edited since the last
+// successful save.
+function setValuePreservingEdits(selector, value) {
+  const control = $(selector);
+  if (control === document.activeElement || control.dataset.dirty === '1') return;
+  control.value = value === null || value === undefined ? '' : String(value);
+}
+
+function markDirtyOnInput(selector) {
+  const control = $(selector);
+  control.addEventListener('input', () => { control.dataset.dirty = '1'; });
+}
+
+function clearDirty(selectors) {
+  for (const selector of selectors) delete $(selector).dataset.dirty;
 }
 
 function clear(element) {
@@ -282,11 +357,11 @@ function renderProfiles() {
     ? (isUsable ? 'LIVE VERIFIED' : 'LIVE LOCKED')
     : (isReady ? 'PAPER VERIFIED' : 'NOT VERIFIED'));
   $('#profileEnvironment').className = isLive ? 'live-environment' : 'paper-environment';
-  setValue('#profileHost', profile?.host);
-  setValue('#profilePort', profile?.port);
-  setValue('#profileClientId', profile?.clientId);
+  setValuePreservingEdits('#profileHost', profile?.host);
+  setValuePreservingEdits('#profilePort', profile?.port);
+  setValuePreservingEdits('#profileClientId', profile?.clientId);
   setValue('#profileAccount', profile?.accountMask || profile?.account || 'Unavailable');
-  setValue('#profileCapitalPerTrade', profile?.capitalPerTradeDollars ?? '');
+  setValuePreservingEdits('#profileCapitalPerTrade', profile?.capitalPerTradeDollars ?? '');
   const editable = profileIsEditable(profile);
   for (const selector of ['#profileHost', '#profilePort', '#profileClientId', '#profileCapitalPerTrade']) setControlDisabled(selector, !editable);
   setControlDisabled('#saveProfile', !editable);
@@ -424,6 +499,15 @@ function renderPositionDetail(trade) {
     element('span', `Realized P&L: ${trade.pnlFormatted || 'Unavailable'} · Unrealized P&L: ${trade.unrealizedPnlFormatted || 'Unavailable'} · Commission: ${trade.totalCommission ?? 'Unavailable'}`),
   );
   grid.append(header);
+  const ladder = trade.protection?.ladder;
+  if (ladder?.underfunded) {
+    const warning = element('div', undefined, 'allocation-heading ladder-underfunded');
+    warning.append(
+      element('strong', `LADDER UNDERFUNDED · ${ladder.fundedLevels}/${ladder.configuredLevels} TIERS`),
+      element('span', ladder.message),
+    );
+    grid.append(warning);
+  }
   const legs = trade.protection?.legs || [];
   if (!legs.length) {
     grid.append(element('p', trade.protection?.status === 'OK'
@@ -438,6 +522,9 @@ function renderPositionDetail(trade) {
         element('span', leg.triggerPrice ? `Trigger ${leg.triggerPrice}` : 'No trigger'),
         element('span', leg.limitPrice ? `Limit ${leg.limitPrice}` : 'No limit'),
         element('span', `Qty ${display(leg.quantity)}`),
+        element('span', leg.realizedDriftPercent
+          ? `Actual ${leg.realizedDriftPercent} vs entry`
+          : 'Actual % unavailable'),
       );
       grid.append(item);
     }
@@ -452,8 +539,12 @@ function renderPositionDetail(trade) {
       item.append(
         element('small', transition.after),
         element('strong', transition.action),
-        element('span', display(transition.status)),
-        element('span', transition.appliedAt ? `Applied ${formatTime(transition.appliedAt)}` : 'Not yet applied'),
+        element('span', transition.status === 'INERT' ? 'INERT · NEVER FIRED' : display(transition.status)),
+        element('span', transition.status === 'INERT'
+          ? (transition.reason || 'This transition could never fire; no stop was moved.')
+          : transition.appliedAt
+            ? `Applied ${formatMarketTime(transition.appliedAt)}`
+            : 'Not yet applied'),
       );
       grid.append(item);
     }
@@ -464,7 +555,13 @@ function buildActiveTradeRow(trade) {
   const row = element('tr');
   row.dataset.tradeId = trade.correlationId || '';
   row.tabIndex = 0;
-  row.setAttribute('role', 'button');
+  // Deliberately NOT role="button". That role removes the row from the table's
+  // accessibility tree entirely -- the <td>s stop being exposed as cells, so a
+  // screen-reader user loses the SYMBOL/QTY/PROTECTION/LIFECYCLE column-header
+  // association -- and it nests three interactive controls (qty input, PARTIAL
+  // CLOSE, FLATTEN) inside a button, which is invalid. The row keeps native
+  // row/cell semantics; it is still focusable and Enter/Space still selects it
+  // (see the #activeTradeRows keydown handler).
   row.setAttribute('aria-label', `Show protection detail for ${trade.symbol || 'position'}`);
   const rightLabel = trade.right === 'C' ? 'CALL' : trade.right === 'P' ? 'PUT' : (trade.right || '');
   const strikeLabel = trade.strike ? `$${trade.strike}` : '';
@@ -509,8 +606,14 @@ function buildActiveTradeRow(trade) {
   partialButton.title = 'Reduce-only: never exceeds verified long quantity minus working exits.';
   partialButton.addEventListener('click', () => {
     const qty = Number(qtyInput.value);
-    if (!Number.isInteger(qty) || qty < 1) {
-      showToast('Enter a valid positive integer quantity for partial close.', 'error');
+    const openQty = Number(trade.quantity?.open);
+    if (!Number.isInteger(qty) || qty < 1 || (Number.isInteger(openQty) && qty > openQty)) {
+      const bound = Number.isInteger(openQty) && openQty > 0 ? ` between 1 and ${openQty}` : '';
+      notifyFailure('PARTIAL CLOSE', `Enter a whole number of contracts${bound}.`, {
+        correlationId: trade.correlationId,
+        code: 'CLOSE_QUANTITY_INVALID',
+      });
+      qtyInput.focus();
       return;
     }
     openPartialCloseConfirm(trade, qty);
@@ -733,6 +836,20 @@ function element(tag, text, className) {
   return node;
 }
 
+// Single source of truth for how the connected session's environment is named
+// anywhere in the UI. Never defaults to PAPER -- see renderRuntime().
+function setDialogEnvironment(selector) {
+  const label = environmentLabelForDisplay();
+  const node = $(selector);
+  node.textContent = `ENVIRONMENT: ${label}`;
+  node.className = `field-note dialog-environment ${label.toLowerCase()}`;
+}
+
+function environmentLabelForDisplay() {
+  const reported = state.runtime?.core?.environment;
+  return reported === 'LIVE' || reported === 'PAPER' ? reported : 'UNVERIFIED';
+}
+
 function renderStrikeSelection(strikeSelection) {
   const pill = $('#strikeSelectionPill');
   if (!strikeSelection || !strikeSelection.metric) {
@@ -759,8 +876,16 @@ function renderRuntime() {
   const ledgerReady = runtime.ledger?.ready === true;
   const paperExecution = mode === 'paper_tws';
   const profile = selectedProfile();
-  const environment = runtime.core?.environment || profile?.environment || 'UNVERIFIED';
+  // The environment is a property of the *connected session*, reported by the
+  // core. The operator's profile dropdown is an intent, not evidence, so it is
+  // deliberately not a fallback here -- a selected "paper-tws" profile must
+  // never make an unverified live session render as PAPER. Anything other than
+  // an affirmative LIVE or PAPER is UNVERIFIED, and UNVERIFIED is presented as
+  // a risk state, not as the safe one.
+  const reported = runtime.core?.environment;
+  const environment = reported === 'LIVE' || reported === 'PAPER' ? reported : 'UNVERIFIED';
   const isLive = environment === 'LIVE';
+  const isVerifiedEnvironment = environment !== 'UNVERIFIED';
   const usable = profileIsReady(profile);
 
   setText('#webhookStatus', configured ? 'READY' : 'NOT CONFIGURED');
@@ -773,9 +898,12 @@ function renderRuntime() {
   setText('#webhookEndpoint', runtime.webhook?.endpoint || `${location.origin}/webhooks/tradingview`);
   setText('#authStatus', configured ? 'Configured · secret redacted' : 'Missing QT_WEBHOOK_SECRET');
   setText('#ledgerStatus', ledgerReady ? 'SQLite WAL ready' : 'Unavailable');
-  setText('#footerMode', `${isLive ? 'LIVE SESSION' : 'PAPER'} · ${usable ? 'VERIFIED' : 'LOCKED'} · ${paperExecution ? 'OFFICIAL TWS' : 'CAPTURE ONLY'}`);
-  setText('#environmentBadge', isLive ? `LIVE · ${usable ? 'SESSION VERIFIED' : 'LOCKED'}` : `PAPER · ${usable ? 'READY' : 'LOCKED'}`);
-  $('#environmentBadge').className = `mode-badge ${isLive ? 'live' : ''}`;
+  const environmentLabel = isLive ? 'LIVE' : isVerifiedEnvironment ? 'PAPER' : 'UNVERIFIED';
+  setText('#footerMode', `${isLive ? 'LIVE SESSION' : environmentLabel} · ${usable ? 'VERIFIED' : 'LOCKED'} · ${paperExecution ? 'OFFICIAL TWS' : 'CAPTURE ONLY'}`);
+  setText('#environmentBadge', isVerifiedEnvironment
+    ? `${environmentLabel} · ${isLive ? (usable ? 'SESSION VERIFIED' : 'LOCKED') : (usable ? 'READY' : 'LOCKED')}`
+    : 'UNVERIFIED · ENVIRONMENT UNKNOWN');
+  $('#environmentBadge').className = `mode-badge ${isLive ? 'live' : ''}${isVerifiedEnvironment ? '' : ' unverified'}`;
 
   const ingressPill = $('#ingressPill');
   ingressPill.textContent = configured && ledgerReady ? 'READY' : 'BLOCKED';
@@ -785,14 +913,16 @@ function renderRuntime() {
 
   const banner = $('#safetyBanner');
   clear(banner);
-  const title = element('strong', paperExecution ? `CONTROLLED ${isLive ? 'LIVE SESSION' : 'PAPER'} ADAPTER` : 'CAPTURE-ONLY SAFETY MODE');
+  const title = element('strong', paperExecution ? `CONTROLLED ${isLive ? 'LIVE SESSION' : environmentLabel} ADAPTER` : 'CAPTURE-ONLY SAFETY MODE');
   const message = element('span', paperExecution
-    ? (coreReady
+    ? (!isVerifiedEnvironment
+      ? 'The connected core has not reported whether this session is PAPER or LIVE. Treat this as potentially live: do not assume orders are simulated.'
+      : coreReady
       ? `The ${isLive ? 'live' : 'paper'} core is connected. Manual entries may be reviewed and submitted (or autosent, per Settings); TradingView-sourced alerts remain execution-blocked until fill and protection management is qualified.`
       : `${isLive ? 'Live' : 'Paper'} execution is configured but the official TWS core is not ready; new entries are blocked.`)
     : 'Alerts can be authenticated and recorded; no broker order can be placed in this mode.');
   banner.append(title, message);
-  banner.className = `safety-banner ${paperExecution && !coreReady ? 'danger' : ''}`;
+  banner.className = `safety-banner ${paperExecution && (!coreReady || !isVerifiedEnvironment) ? 'danger' : ''}`;
 
   const checks = [
     ['Webhook secret configured', configured],
@@ -857,7 +987,7 @@ function renderAlerts() {
   const stateFilter = $('#alertStateFilter')?.value || 'ALL';
   const symbolFilter = ($('#alertSymbolFilter')?.value || '').trim().toUpperCase();
   const dateFilter = $('#alertDateFilter')?.value || '';
-  const attentionStates = ['BLOCKED', 'FAILED', 'REJECTED', 'STALE', 'SUBMISSION_UNKNOWN'];
+  const attentionStates = ['BLOCKED', 'FAILED', 'EXPIRED', 'SUBMISSION_UNKNOWN'];
   const visibleAlerts = state.alerts.filter((alert) => {
     if (stateFilter === 'ATTENTION' ? !attentionStates.includes(alert.status) : stateFilter !== 'ALL' && alert.status !== stateFilter) return false;
     if (symbolFilter && alert.payload?.ticker?.toUpperCase() !== symbolFilter) return false;
@@ -899,7 +1029,7 @@ function renderAlerts() {
     if (!knownAttentionCorrelations.has(alert.correlationId)) mergedAttentionAlerts.push(alert);
   }
   const attention = mergedAttentionAlerts.filter((alert) => attentionStates.includes(alert.status)
-    && !(CLEARABLE_ATTENTION_STATES.has(alert.status)
+    && !(isClearableAttention(alert)
       && state.attentionAcknowledgements.has(attentionAcknowledgementKey(alert))));
   // Only a definitive working protection status is safe. Unavailable,
   // unresolved, pending, filled-only, and unprotected states all require
@@ -908,8 +1038,8 @@ function renderAlerts() {
     ? state.activeTrades.filter((trade) => !summarizeProtection(trade.protection).label.endsWith(' WORKING'))
     : [];
   const closedWithWorkingProtection = state.excludedNonOpenTrades.filter(hasWorkingProtection);
-  const historicalNotices = attention.filter((alert) => CLEARABLE_ATTENTION_STATES.has(alert.status));
-  const activeAlertRisks = attention.filter((alert) => !CLEARABLE_ATTENTION_STATES.has(alert.status));
+  const historicalNotices = attention.filter(isClearableAttention);
+  const activeAlertRisks = attention.filter((alert) => !isClearableAttention(alert));
   const positionEvidenceUnavailable = state.positionsStatus !== 'OK';
   const reconciliationEvidenceUnavailable = !state.reconciliation || state.reconciliation.status !== 'OK';
   const nodeAttentionEvidenceUnavailable = state.nodeAttentionStatus !== 'OK';
@@ -1048,8 +1178,14 @@ async function selectAlert(correlationId) {
       summaryItem('Alert ID', alert.alertId),
       summaryItem('Signal', `${alert.payload?.ticker || '—'} · ${alert.payload?.action || '—'}`),
       summaryItem('Strategy', `${alert.payload?.strategy_id || '—'} @ ${alert.payload?.strategy_version || '—'}`),
-      summaryItem('Received', `${formatTime(alert.createdAt)} · ${age(alert.createdAt)}`),
-      summaryItem('Execution eligibility', alert.executionEligible ? 'Paper adapter' : 'Capture only · permanent'),
+      summaryItem('Received', `${formatMarketTime(alert.createdAt)} · ${age(alert.createdAt)}`),
+      // Never the literal "Paper adapter". That string was rendered on orders
+      // executed against a live U-account, because it described the *feature*
+      // rather than the session. Report the environment the connected core
+      // actually reports, and say UNVERIFIED when it reports nothing.
+      summaryItem('Execution eligibility', alert.executionEligible
+        ? `Submittable · ${environmentLabelForDisplay()} session`
+        : 'Capture only · permanent'),
       summaryItem('Management', `${alert.managementMode || 'Unavailable'}${alert.managementMode === 'APP_MANAGED' ? ' · protection active' : ''}`),
       summaryItem('Management policy', alert.managementPolicyId || 'Unavailable'),
       summaryItem('IBKR order', alert.order?.brokerOrderId || 'Not acknowledged'),
@@ -1062,7 +1198,7 @@ async function selectAlert(correlationId) {
       item.append(
         element('span', '', `timeline-dot ${statusClass(event.type)}`),
         element('strong', statusLabel(event.type)),
-        element('small', formatTime(event.occurredAt)),
+        element('small', formatMarketTime(event.occurredAt)),
         element('p', event.details?.error_code || event.details?.broker_order_id || 'Durably recorded'),
       );
       timeline.append(item);
@@ -1108,12 +1244,22 @@ async function refresh(options) {
       await selectAlert(state.selectedCorrelation);
     }
   } catch (error) {
-    state.runtime = { environment: 'PAPER', mode: 'capture_only', updatedAt: new Date().toISOString() };
+    // A failed dashboard fetch tells us nothing about the backend. Reporting
+    // mode 'capture_only' here made the banner assert "no broker order can be
+    // placed in this mode" -- a fabricated safety claim, while the backend may
+    // well still be in paper_tws auto-submitting TradingView alerts. Keep the
+    // previously observed mode and drop the environment to unknown.
+    state.runtime = {
+      ...(state.runtime || {}),
+      core: null,
+      transportStatus: 'UNAVAILABLE',
+      updatedAt: state.runtime?.updatedAt || null,
+    };
     state.nodeAttentionStatus = 'UNAVAILABLE';
     renderRuntime();
     await loadOperatorState();
     await loadReconciliation();
-    notify(`${error.code ? `${error.code}: ` : ''}${error.message}`);
+    notifyFailure('MANUAL SUBMIT', `${error.code ? `${error.code}: ` : ''}${error.message}`, { code: error.code });
   }
 }
 
@@ -1135,10 +1281,11 @@ async function saveProfile() {
         capitalPerTradeDollars: capitalPerTrade === '' ? null : Number(capitalPerTrade),
       }),
     });
-    notify('Paper connection settings saved. Readiness must be verified before any new entry.');
+    clearDirty(['#profileHost', '#profilePort', '#profileClientId', '#profileCapitalPerTrade']);
+    notify(`${profile.environment === 'LIVE' ? 'Live' : 'Paper'} profile saved. The running core keeps its current host and port until it is restarted.`);
     await loadOperatorState();
   } catch (error) {
-    notify(`${error.code ? `${error.code}: ` : ''}${error.message}`);
+    notifyFailure('SAVE PROFILE', `${error.code ? `${error.code}: ` : ''}${error.message}`, { code: error.code });
   }
 }
 
@@ -1306,7 +1453,9 @@ function closeSubmissionIsDefinitive(submission) {
 
 async function submitPartialClose(trade, quantity) {
   if (!Number.isFinite(quantity) || quantity < 1 || !Number.isInteger(quantity)) {
-    notify('Enter a positive whole number of contracts to partially close.');
+    notifyFailure('PARTIAL CLOSE', 'Enter a positive whole number of contracts to partially close.', {
+      correlationId: trade.correlationId, code: 'CLOSE_QUANTITY_INVALID',
+    });
     return;
   }
   const requestId = pendingCloseRequestId(trade.correlationId, 'REDUCE_ONLY_PARTIAL');
@@ -1317,12 +1466,18 @@ async function submitPartialClose(trade, quantity) {
     });
     const submission = result.submission;
     if (closeSubmissionIsDefinitive(submission)) clearPendingCloseRequest(trade.correlationId, 'REDUCE_ONLY_PARTIAL');
-    notify(submission.status === 'SUBMITTED'
-      ? `Partial close submitted — broker order ${submission.brokerOrderId}.`
-      : `Partial close result: ${submission.status}${submission.code ? ` (${submission.code})` : ''}.`);
+    if (submission.status === 'SUBMITTED') {
+      notify(`Partial close submitted — broker order ${submission.brokerOrderId}.`);
+    } else {
+      notifyFailure('PARTIAL CLOSE', `Partial close result: ${submission.status}.`, {
+        correlationId: trade.correlationId, code: submission.code,
+      });
+    }
     await loadOperatorState();
   } catch (error) {
-    notify(`${error.code ? `${error.code}: ` : ''}${error.message}`);
+    notifyFailure('PARTIAL CLOSE', `${error.code ? `${error.code}: ` : ''}${error.message}`, {
+      correlationId: trade.correlationId, code: error.code,
+    });
   }
 }
 
@@ -1330,6 +1485,7 @@ function openPartialCloseConfirm(trade, quantity) {
   state.pendingPartialClose = { trade, quantity };
   const dialog = $('#partialCloseConfirmDialog');
   if (dialog) {
+    setDialogEnvironment('#partialCloseEnvironment');
     setText('#partialCloseSummary', `${display(trade.symbol)} · ${quantity} contract(s) · account ${display(trade.account)}`);
     dialog.showModal();
   } else {
@@ -1347,6 +1503,7 @@ function openPartialCloseConfirm(trade, quantity) {
 // phrase and the Autosend opt-in, not a single unguarded click.
 function openFlattenConfirm(trade) {
   state.pendingFlatten = trade;
+  setDialogEnvironment('#flattenEnvironment');
   setText('#flattenSummary', `${display(trade.symbol)} · qty ${trade.quantity?.open ?? 'Unavailable'} · account ${display(trade.account)}`);
   $('#flattenConfirmInput').value = '';
   $('#confirmFlatten').disabled = true;
@@ -1366,14 +1523,20 @@ async function submitFlatten() {
     });
     const submission = result.submission;
     if (closeSubmissionIsDefinitive(submission)) clearPendingCloseRequest(trade.correlationId, 'FULL_FLATTEN');
-    notify(submission.status === 'SUBMITTED'
-      ? `Flatten submitted — broker order ${submission.brokerOrderId}.`
-      : `Flatten result: ${submission.status}${submission.code ? ` (${submission.code})` : ''}.`);
+    if (submission.status === 'SUBMITTED') {
+      notify(`Flatten submitted — broker order ${submission.brokerOrderId}.`);
+    } else {
+      notifyFailure('FLATTEN', `Flatten result: ${submission.status}.`, {
+        correlationId: trade.correlationId, code: submission.code,
+      });
+    }
     $('#flattenConfirmDialog').close();
     state.pendingFlatten = null;
     await loadOperatorState();
   } catch (error) {
-    notify(`${error.code ? `${error.code}: ` : ''}${error.message}`);
+    notifyFailure('FLATTEN', `${error.code ? `${error.code}: ` : ''}${error.message}`, {
+      correlationId: trade.correlationId, code: error.code,
+    });
   } finally {
     button.disabled = false;
   }
@@ -1411,7 +1574,7 @@ async function coreProcessAction(action, button) {
       renderRuntime();
     }
   } catch (error) {
-    notify(`${error.code ? `${error.code}: ` : ''}${error.message}`);
+    notifyFailure(`CORE ${action.toUpperCase()}`, `${error.code ? `${error.code}: ` : ''}${error.message}`, { code: error.code });
   } finally {
     button.disabled = false;
   }
@@ -1459,6 +1622,13 @@ $('#refreshDashboard').addEventListener('click', async (event) => {
     event.target.disabled = false;
   }
 });
+for (const selector of ['#profileHost', '#profilePort', '#profileClientId', '#profileCapitalPerTrade']) {
+  markDirtyOnInput(selector);
+}
+$('#clearOperatorErrors').addEventListener('click', () => {
+  operatorErrors.length = 0;
+  renderOperatorErrors();
+});
 $('#startCoreProcess').addEventListener('click', (event) => coreProcessAction('start', event.target));
 $('#restartCoreProcess').addEventListener('click', (event) => coreProcessAction('restart', event.target));
 $('#stopCoreProcess').addEventListener('click', (event) => coreProcessAction('stop', event.target));
@@ -1471,7 +1641,11 @@ $('#settingsDialog').addEventListener('click', (event) => {
 });
 
 $('#flattenConfirmInput').addEventListener('input', (event) => {
-  $('#confirmFlatten').disabled = event.target.value.trim().toUpperCase() !== 'FLATTEN';
+  // Exact match, case-sensitive and untrimmed. The label says "Type FLATTEN";
+  // accepting "flatten" or "  fLaTtEn  " made the friction decorative, and this
+  // is the last gate before an irreversible market-hours sale of the whole
+  // position.
+  $('#confirmFlatten').disabled = event.target.value !== 'FLATTEN';
 });
 $('#cancelFlatten').addEventListener('click', () => {
   state.pendingFlatten = null;
@@ -1545,7 +1719,7 @@ $('#toggleManualTrade').addEventListener('click', () => {
 });
 $('#refreshClosedTrades').addEventListener('click', loadOperatorState);
 $('#clearResolvedAttention').addEventListener('click', async () => {
-  const clearable = state.alerts.filter((alert) => CLEARABLE_ATTENTION_STATES.has(alert.status)
+  const clearable = state.alerts.filter((alert) => isClearableAttention(alert)
     && !state.attentionAcknowledgements.has(attentionAcknowledgementKey(alert)));
   const addedKeys = clearable.map(attentionAcknowledgementKey);
   for (const key of addedKeys) state.attentionAcknowledgements.add(key);
@@ -1583,6 +1757,11 @@ $('#activeTradeRows').addEventListener('click', (event) => {
 });
 $('#activeTradeRows').addEventListener('keydown', (event) => {
   if (!['Enter', ' '].includes(event.key)) return;
+  // Only the row itself. Previously this matched the ancestor row even when
+  // focus was on FLATTEN or PARTIAL CLOSE, and the preventDefault() below
+  // suppressed the button's own Enter/Space activation -- leaving the two
+  // destructive position controls reachable by mouse only (WCAG 2.1.1).
+  if (event.target !== event.currentTarget && !event.target.matches('tr[data-trade-id]')) return;
   const row = event.target.closest('tr[data-trade-id]');
   if (!row) return;
   event.preventDefault();

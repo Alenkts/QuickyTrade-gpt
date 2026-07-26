@@ -142,8 +142,9 @@ class ReadEndpointsTests(unittest.TestCase):
         con_id: int | None = None,
     ) -> None:
         base_contract = option()
+        next_con_id = 201 + len(self.transport.position_rows)
         contract = QualifiedContract(
-            **{**base_contract.__dict__, "con_id": con_id if con_id is not None else 201 + len(self.transport.position_rows)}
+            **{**base_contract.__dict__, "con_id": con_id if con_id is not None else next_con_id}
         )
         self.transport.position_rows.append(
             Position(account="DU12345", contract=contract, quantity=Decimal(quantity), average_cost=Decimal("1.00"))

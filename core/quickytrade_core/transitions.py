@@ -24,6 +24,8 @@ package):
              none ambiguous)]--> APPLIED (terminal)
   APPLYING --[any leg modify is ambiguous]--> FAILED_UNKNOWN (terminal)
   APPLYING --[process restart while stuck]--> FAILED_UNKNOWN (terminal)
+  PENDING  --[the level's only TP leg was SKIPPED_ZERO_ALLOCATION]--> INERT
+             (terminal; no broker call was ever attempted)
 
 ``FAILED_UNKNOWN`` is a genuinely terminal state: per AGENTS.md ("never add
 automatic retry for an uncertain submission"), ``ensure_transitions`` never
@@ -34,11 +36,17 @@ requires the same kind of out-of-band reconciliation this codebase already
 leaves for an ambiguous protection *placement* (Phase 3's own
 SUBMISSION_UNKNOWN has no automated resolution path either). A level whose
 only take-profit leg was ``SKIPPED_ZERO_ALLOCATION`` (Phase 3: a zero-quantity
-allocation, never actually submitted to IBKR) can never produce fill
-evidence -- such a transition is resolved directly to ``APPLIED`` the first
-time it is observed, with a ``details_json`` note explaining why, rather than
-left permanently pending and re-evaluated forever for a fill that structurally
-cannot happen.
+allocation, never actually submitted to IBKR) can never produce fill evidence.
+Such a transition is resolved directly to ``INERT`` the first time it is
+observed, rather than left permanently pending and re-evaluated forever for a
+fill that structurally cannot happen.
+
+``INERT`` is deliberately NOT ``APPLIED``. It used to be, with the explanation
+buried in ``details_json`` -- which the dashboard does not render. The operator
+asking "did my trailing stop engage?" was answered "APPLIED", for a stop that
+was never placed and never modified. A transition that did something and a
+transition that could never do anything are different facts and must not share
+a status.
 """
 
 from __future__ import annotations
@@ -56,7 +64,7 @@ CREATE TABLE IF NOT EXISTS management_transitions (
   correlation_id TEXT NOT NULL,
   "after" TEXT NOT NULL,
   action TEXT NOT NULL CHECK(action IN ('MOVE_STOP_TO_BREAKEVEN','TRAIL_FRESH_BID')),
-  status TEXT NOT NULL CHECK(status IN ('PENDING','APPLYING','APPLIED','FAILED_UNKNOWN')),
+  status TEXT NOT NULL CHECK(status IN ('PENDING','APPLYING','APPLIED','FAILED_UNKNOWN','INERT')),
   applied_at TEXT,
   details_json TEXT,
   created_at TEXT NOT NULL,
@@ -141,19 +149,39 @@ class TransitionLedger:
             )
 
     def mark_applied(self, transition_id: str, *, details: dict[str, Any] | None = None) -> None:
-        """Terminal success. Reachable directly from PENDING (the
-        SKIPPED_ZERO_ALLOCATION short-circuit -- no broker call was ever
-        attempted) or from APPLYING (every attempted leg modify resolved,
-        none ambiguous)."""
+        """Terminal success: every attempted leg modify resolved, none ambiguous.
+
+        Only reachable from APPLYING, i.e. only after a broker call was
+        actually attempted. The PENDING -> APPLIED path was removed: it was
+        used exclusively by the SKIPPED_ZERO_ALLOCATION short-circuit, which
+        now resolves to INERT instead (see mark_inert)."""
         now = _now()
         with self._lock:
             changed = self._db.execute(
                 """UPDATE management_transitions SET status='APPLIED', applied_at=?, details_json=?, updated_at=?
-                   WHERE transition_id=? AND status IN ('PENDING','APPLYING')""",
+                   WHERE transition_id=? AND status='APPLYING'""",
                 (now, _details(details), now, transition_id),
             )
         if changed.rowcount != 1:
             raise RuntimeError("Transition is not in a state that can be marked APPLIED")
+
+    def mark_inert(self, transition_id: str, *, details: dict[str, Any] | None = None) -> None:
+        """Terminal, and explicitly *not* a success.
+
+        The transition can never fire because the level it waits on never
+        received a real broker order. Nothing was placed, nothing was
+        modified, and no stop was moved. Kept distinct from APPLIED so the
+        operator is never told a protection change took effect when none did.
+        """
+        now = _now()
+        with self._lock:
+            changed = self._db.execute(
+                """UPDATE management_transitions SET status='INERT', details_json=?, updated_at=?
+                   WHERE transition_id=? AND status='PENDING'""",
+                (_details(details), now, transition_id),
+            )
+        if changed.rowcount != 1:
+            raise RuntimeError("Transition is not in a state that can be marked INERT")
 
     def mark_failed_unknown(self, transition_id: str, *, details: dict[str, Any] | None = None) -> None:
         """Terminal, never automatically retried (see module docstring).

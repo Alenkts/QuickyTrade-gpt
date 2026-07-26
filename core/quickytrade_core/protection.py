@@ -439,6 +439,57 @@ class ProtectionLedger:
         if changed.rowcount != 1:
             raise RuntimeError("Protection leg is not in a CANCELLING state")
 
+    def mark_filled(self, protection_id: str, *, execution_evidence: dict[str, Any]) -> bool:
+        """Resolve a working leg to FILLED on positive broker execution evidence.
+
+        Only ever called with real broker_executions rows for this leg's own
+        order_ref -- never inferred from a leg's disappearance from the open
+        order list, which is equally consistent with a cancel.
+        """
+        with self._lock:
+            changed = self._db.execute(
+                """UPDATE broker_protection_orders
+                   SET status='FILLED', result_json=?, updated_at=?
+                   WHERE protection_id=? AND status='SUBMITTED'""",
+                (
+                    json.dumps(execution_evidence, separators=(",", ":"), sort_keys=True),
+                    _now(),
+                    protection_id,
+                ),
+            )
+        return changed.rowcount == 1
+
+    def mark_cancelled_by_oca(self, protection_id: str, *, filled_sibling_id: str) -> bool:
+        """Resolve a working leg to CANCELLED because its OCA sibling filled.
+
+        A one-cancels-all group is a broker guarantee: once one leg of the
+        group is confirmed filled, IBKR has cancelled the others. That makes
+        this positive evidence rather than an inference from absence.
+        """
+        with self._lock:
+            changed = self._db.execute(
+                """UPDATE broker_protection_orders
+                   SET status='CANCELLED', result_json=?, updated_at=?
+                   WHERE protection_id=? AND status='SUBMITTED' AND cancel_status IS NULL""",
+                (
+                    json.dumps(
+                        {"cancelledBy": "OCA_SIBLING_FILLED", "filledSibling": filled_sibling_id},
+                        separators=(",", ":"), sort_keys=True,
+                    ),
+                    _now(),
+                    protection_id,
+                ),
+            )
+        return changed.rowcount == 1
+
+    def working_legs(self) -> list[dict[str, Any]]:
+        """Every leg this ledger still believes is working at IBKR."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM broker_protection_orders WHERE status='SUBMITTED' ORDER BY protection_id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     # ---- reads ------------------------------------------------------------
 
     def get(self, protection_id: str) -> dict[str, Any] | None:

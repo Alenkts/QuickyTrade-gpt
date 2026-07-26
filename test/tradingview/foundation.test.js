@@ -31,7 +31,7 @@ function payload(overrides = {}) {
     action: 'OPEN_LONG_CALL',
     ticker: 'SPY',
     target_dte: 0,
-    strike_policy: { type: 'ATM_OFFSET', offset: 1 },
+    strike_policy: { type: 'TARGET_RANGE' },
     risk_hint: { max_contracts: 2 },
     exit_policy_id: 'standard-bracket-v1',
     ...overrides,
@@ -109,7 +109,7 @@ test('strict validation enforces schema, fields, enum, body age, and clock skew'
 
 test('extended payload validation enforces open, close, nested, and configured risk contracts', () => {
   const open = parseAndValidatePayload(body(), { now: NOW, maxRiskHintContracts: 2 });
-  assert.deepEqual(open.strike_policy, { type: 'ATM_OFFSET', offset: 1 });
+  assert.deepEqual(open.strike_policy, { type: 'TARGET_RANGE' });
   assert.deepEqual(open.risk_hint, { max_contracts: 2 });
 
   const requirementExample = payload({ alert_id: 'requirements-open' });

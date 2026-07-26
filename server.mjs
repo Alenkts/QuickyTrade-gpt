@@ -156,10 +156,25 @@ let coreProcessStartedAt = null;
 let coreProcessExitInfo = null;
 let coreProcessLog = [];
 
+// The core's raw stderr is surfaced by GET /api/core/process, which any local
+// process can read. A Python traceback can carry the bearer token from a
+// request repr, and IBKR account identifiers appear in ordinary core logging --
+// neither belongs in a readable buffer. Scrub before the line is ever stored,
+// so nothing sensitive is retained even in memory.
+function scrubCoreLogLine(line) {
+  let scrubbed = String(line);
+  for (const secret of [CORE_TOKEN, WEBHOOK_SECRET]) {
+    if (secret && secret.length >= 8) scrubbed = scrubbed.split(secret).join('[redacted]');
+  }
+  return scrubbed
+    .replace(/\b(bearer|token|secret|password|authorization)\b(\s*[:=]\s*|\s+)\S+/gi, '$1$2[redacted]')
+    .replace(/\b(DU|U)\d{5,}\b/g, (match) => maskAccount(match));
+}
+
 function appendCoreLog(stream, text) {
   for (const line of String(text).split('\n')) {
     if (!line.trim()) continue;
-    coreProcessLog.push({ stream, line, at: new Date().toISOString() });
+    coreProcessLog.push({ stream, line: scrubCoreLogLine(line), at: new Date().toISOString() });
   }
   if (coreProcessLog.length > CORE_LOG_LIMIT) {
     coreProcessLog = coreProcessLog.slice(-CORE_LOG_LIMIT);
@@ -428,7 +443,19 @@ const twsAdapter = {
   },
 };
 
-const processor = new IbkrAlertProcessor({ store, ibkrAdapter: twsAdapter, logger: safeLogger });
+// maxAgeMs is the same budget the ingress applies to `sent_at`, but enforced
+// again at *drain* time. Ingress freshness alone is not enough: an alert
+// accepted while the core was down sits READY for as long as the outage lasts,
+// and the queue then flushes the whole backlog within milliseconds of
+// reconnect -- three stale 0DTE entries went out that way. Without this, the
+// only thing standing between a hours-old signal and a live order is the
+// core's own age check on the far side of an HTTP hop.
+const processor = new IbkrAlertProcessor({
+  store,
+  ibkrAdapter: twsAdapter,
+  logger: safeLogger,
+  maxAgeMs: WEBHOOK_MAX_AGE_MS,
+});
 
 function integerEnv(name, fallback, minimum, maximum) {
   const raw = process.env[name];
@@ -469,17 +496,103 @@ async function rawBody(req, limit) {
   return Buffer.concat(chunks, length);
 }
 
-function assertWebhookRate(req) {
-  if (webhookInFlight >= 8) throw new WebhookError('TOO_MANY_CONCURRENT_REQUESTS', 'Too many concurrent webhook requests', 429);
-  const key = req.socket.remoteAddress || 'unknown';
+// Fixed-window counter shared by both budgets below. Returns the count after
+// charging this request; callers decide what limit applies to their bucket.
+function chargeRateWindow(bucket, key) {
+  const composite = `${bucket}|${key}`;
   const now = Date.now();
-  const current = rateWindows.get(key);
+  const current = rateWindows.get(composite);
   if (!current || now - current.startedAt >= 1_000) {
-    rateWindows.set(key, { startedAt: now, count: 1 });
-    return;
+    rateWindows.set(composite, { startedAt: now, count: 1 });
+    // Opportunistic sweep so a flood of distinct keys cannot grow this map
+    // without bound (see M9's unbounded-growth class of problem).
+    if (rateWindows.size > 1_024) {
+      for (const [existingKey, window] of rateWindows) {
+        if (now - window.startedAt >= 1_000) rateWindows.delete(existingKey);
+      }
+    }
+    return 1;
   }
   current.count += 1;
-  if (current.count > 10) throw new WebhookError('RATE_LIMITED', 'Webhook request rate exceeded', 429);
+  return current.count;
+}
+
+function isLoopbackHostHeader(value) {
+  if (typeof value !== 'string' || value === '') return false;
+  // Strip the port without mangling a bracketed IPv6 literal ("[::1]:4173").
+  const host = (value.startsWith('[') ? value.slice(1).split(']')[0] : value.split(':')[0]).toLowerCase();
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
+function isLoopbackOrigin(value) {
+  if (typeof value !== 'string' || value === '') return false;
+  try {
+    const { protocol, hostname } = new URL(value);
+    if (protocol !== 'http:' && protocol !== 'https:') return false;
+    const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  } catch {
+    return false;
+  }
+}
+
+// CSRF policy for the private API. A Content-Type allowlist alone does not
+// cover the actual attack: a bodyless cross-site
+// `fetch(url, { method: 'POST', mode: 'no-cors' })` sends no Content-Type at
+// all, so /api/core/process/{start,stop,restart} were reachable from any open
+// page -- stopping the core mid-position also stops the sweep that maintains
+// stops on an open position. Sec-Fetch-Site is the reliable signal (it is
+// browser-set and unforgeable by page script); Origin is the fallback for
+// engines that do not send it. Requests with neither header are not browser
+// requests and are allowed, which is what keeps curl, the tests, and the
+// Tauri shell working.
+function crossOriginRejection(req) {
+  const site = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+  if (site && site !== 'same-origin' && site !== 'none') {
+    return { status: 403, code: 'CROSS_ORIGIN_FORBIDDEN', message: 'Cross-origin state-changing requests are forbidden' };
+  }
+  const origin = req.headers.origin;
+  if (origin && origin !== 'null' && !isLoopbackOrigin(origin)) {
+    return { status: 403, code: 'CROSS_ORIGIN_FORBIDDEN', message: 'Cross-origin state-changing requests are forbidden' };
+  }
+  // Defense in depth: the media types a cross-site HTML form can produce
+  // without triggering a CORS preflight are never legitimate here.
+  const contentType = String(req.headers['content-type'] || '').toLowerCase();
+  for (const type of ['application/x-www-form-urlencoded', 'multipart/form-data', 'text/plain']) {
+    if (contentType.includes(type)) {
+      return { status: 415, code: 'UNSUPPORTED_MEDIA_TYPE', message: 'Simple form media types are forbidden on API endpoints' };
+    }
+  }
+  return null;
+}
+
+// Admission control, applied *before* authentication. This deliberately does
+// NOT include a per-address request budget. Behind ngrok every request
+// presents as 127.0.0.1, so a pre-auth per-address budget is effectively
+// global: an unauthenticated attacker exhausts it and genuine TradingView
+// alerts are locked out (a denial-of-execution, not merely a nuisance). The
+// only pre-auth bound is concurrency, which caps simultaneous work without
+// letting anyone consume a *rate* budget they have not authenticated into.
+function assertWebhookAdmission() {
+  if (webhookInFlight >= 8) throw new WebhookError('TOO_MANY_CONCURRENT_REQUESTS', 'Too many concurrent webhook requests', 429);
+}
+
+// Charged only once a request has proven possession of the webhook secret.
+// Bounds durable writes from a legitimate-but-runaway alert configuration.
+// An attacker cannot reach this budget, so it can never starve real alerts.
+function assertAuthenticatedWebhookRate(req) {
+  const key = req.socket.remoteAddress || 'unknown';
+  if (chargeRateWindow('authenticated', key) > 60) {
+    throw new WebhookError('RATE_LIMITED', 'Authenticated webhook request rate exceeded', 429);
+  }
+}
+
+// Charged when a request fails authentication. Keyed per address so a single
+// noisy source is throttled quickly; because it is a separate bucket from the
+// authenticated budget above, exhausting it has no effect on real alerts.
+function assertUnauthenticatedWebhookRate(req) {
+  const key = req.socket.remoteAddress || 'unknown';
+  return chargeRateWindow('unauthenticated', key) <= 10;
 }
 
 function mapAlert(alert) {
@@ -587,10 +700,15 @@ async function previewManualIntent(intent) {
       signal: AbortSignal.timeout(20_000),
     });
     const result = await response.json().catch(() => ({}));
-    return response.ok ? result : {
-      status: 'BLOCKED',
-      code: machineCode(result.code, 'CORE_PREVIEW_BLOCKED'),
-    };
+    if (!response.ok) {
+      return { status: 'BLOCKED', code: machineCode(result.code, 'CORE_PREVIEW_BLOCKED') };
+    }
+    // The core's preview body carries the full account number. Mask it on the
+    // way out for the same reason the positions and closed-trade responses do
+    // -- this body is rendered straight into the dashboard's review panel.
+    return result && typeof result === 'object' && typeof result.account === 'string'
+      ? { ...result, account: maskAccount(result.account) }
+      : result;
   } catch {
     return { status: 'BLOCKED', code: 'CORE_PREVIEW_UNAVAILABLE' };
   }
@@ -672,7 +790,13 @@ async function checkCore() {
       signal: AbortSignal.timeout(2_000),
     });
     const result = await response.json().catch(() => ({}));
-    const environment = result.environment === 'LIVE' ? 'LIVE' : 'PAPER';
+    // A missing or unrecognized environment is *unknown*, never PAPER. Mapping
+    // it to PAPER is a fail-open on the single most consequential piece of
+    // state in the app: it makes an unverified session render as the safe one,
+    // and this value feeds overlayProfile's matchesRunningCore.
+    const environment = result.environment === 'LIVE' ? 'LIVE'
+      : result.environment === 'PAPER' ? 'PAPER'
+        : null;
     const ready = response.ok && result.ready === true;
     const strikeSelection = result.strikeSelection && typeof result.strikeSelection === 'object'
       ? {
@@ -846,6 +970,47 @@ function mapProtectionLeg(leg) {
   };
 }
 
+// H5. `largest_remainder_allocation(1, [50,25,25])` yields TP1:1, TP2:0,
+// TP3:0 -- one contract cannot be split three ways. That is arithmetic, not a
+// bug, but reporting it as an unqualified success is: `paper-balanced-v1`
+// executed as "exit 100% at +20%, stop 100% at -25%", a materially different
+// strategy that caps every winner at the first tier, and nothing said so.
+// Derived here from the durable leg rows rather than added to the core's
+// schema -- SKIPPED_ZERO_ALLOCATION is already recorded per level.
+function summarizeLadder(legs) {
+  const takeProfitLegs = (legs || []).filter((leg) => leg.role === 'TAKE_PROFIT');
+  if (takeProfitLegs.length === 0) return null;
+  const levels = new Map();
+  for (const leg of takeProfitLegs) {
+    const funded = leg.status !== 'SKIPPED_ZERO_ALLOCATION';
+    levels.set(leg.level_id, (levels.get(leg.level_id) || false) || funded);
+  }
+  const configuredLevels = levels.size;
+  const fundedLevels = [...levels.values()].filter(Boolean).length;
+  const unfundedLevels = [...levels.entries()].filter(([, funded]) => !funded).map(([levelId]) => levelId);
+  return {
+    configuredLevels,
+    fundedLevels,
+    unfundedLevels,
+    underfunded: fundedLevels < configuredLevels,
+    message: fundedLevels < configuredLevels
+      ? `Position size funded only ${fundedLevels} of ${configuredLevels} take-profit tiers `
+        + `(${unfundedLevels.join(', ')} received no order). The configured ladder is not what is working at IBKR.`
+      : null,
+  };
+}
+
+// H6. At a low premium one tick is a double-digit percentage of the position,
+// so a 20%/-25% policy can execute as +27.3%/-27.3%. Rounding is directionally
+// safe, but nothing reported the divergence. Computed from the entry fill and
+// the leg's actual working price, so it reflects what IBKR is really holding.
+function protectionDrift(leg, entryAvgPrice) {
+  const entry = Number(entryAvgPrice);
+  const price = Number(leg.role === 'STOP_LOSS' ? leg.trigger_price : leg.limit_price);
+  if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(price) || price <= 0) return null;
+  return `${(((price - entry) / entry) * 100).toFixed(1)}%`;
+}
+
 function mapTransition(transition) {
   return {
     transitionId: transition.transition_id,
@@ -854,21 +1019,33 @@ function mapTransition(transition) {
     status: transition.status,
     appliedAt: transition.applied_at,
     updatedAt: transition.updated_at,
+    // INERT means the transition can never fire because the level it waits on
+    // never received a real broker order. The reason lives in details_json and
+    // was previously dropped here, leaving the operator with a bare status.
+    reason: parseTransitionReason(transition.details_json),
   };
 }
 
-// position.correlation_id (the core's own broker_submissions primary key) is
-// the plain UUID this app's own TradingViewStore generated (#newCorrelationId
-// in store.js) and handed to the core as the persistence receipt when the
-// intent was created (see receive()/prepareSubmission()) -- the core's own
-// _parse_request hard-rejects anything that isn't UUID-shaped
-// (PERSISTENCE_RECEIPT_REQUIRED), so it can never have a "source:alertId"
-// shape. That colon-prefixed shape ("tradingview:<alertId>" /
-// "manual:<alertId>") is the Node-side idempotencyKey (a distinct
-// identifier -- see prepareSubmission()), not the correlationId. So the
-// originating signal (ticker, OPEN_LONG_CALL/OPEN_LONG_PUT) is recoverable
-// straight from this app's own durable TradingViewStore by the UUID
-// correlation_id column directly, with no new core endpoint required.
+function parseTransitionReason(detailsJson) {
+  if (!detailsJson) return null;
+  try {
+    const details = typeof detailsJson === 'string' ? JSON.parse(detailsJson) : detailsJson;
+    return details?.note || details?.reason || null;
+  } catch {
+    return null;
+  }
+}
+
+// position.correlation_id is whatever the core keyed its own
+// broker_submissions row on, and that is the Node-side *idempotencyKey*
+// ("tradingview:<alertId>" / "manual:<alertId>"), not the UUID persistence
+// receipt -- see engine.py's `registry_key = normalized["idempotencyKey"]`.
+// An earlier version of this comment asserted the opposite, and the close
+// path returned ENTRY_REFERENCE_NOT_FOUND for every position as a result.
+// Both shapes are now resolved by getAlertStatusByCorrelationId (UUID
+// receipt first, then orders.idempotency_key), so the originating signal
+// (ticker, OPEN_LONG_CALL/OPEN_LONG_PUT) is recoverable from this app's own
+// durable TradingViewStore with no new core endpoint required.
 // Returns null (never guesses) for anything that doesn't match a stored
 // intent.
 function lookupOriginatingAlert(coreCorrelationId) {
@@ -899,11 +1076,17 @@ function newYorkDate(value) {
   return year && month && day ? `${year}-${month}-${day}` : null;
 }
 
+// closed_at is the core's normalized broker execution time and nothing else.
+// Falling back to updated_at -- the projection/reconciliation cache-write
+// timestamp -- keys daily P&L on when a row was last touched, so any sweep
+// over an old row silently re-dates yesterday's realized P&L into today. A
+// missing close time means "cannot confirm", which the caller surfaces as
+// CLOSE_EXECUTION_TIME_UNAVAILABLE rather than a reassuring number.
 function isClosedToday(position, today = newYorkDate(new Date())) {
-  const closeTime = position?.closed_at || position?.updated_at;
   return position?.lifecycle_status === 'CLOSED'
     && Boolean(today)
-    && newYorkDate(closeTime) === today;
+    && Boolean(position?.closed_at)
+    && newYorkDate(position.closed_at) === today;
 }
 
 function computeDailyPnl(items) {
@@ -982,8 +1165,12 @@ async function mapActiveTradeItem(position) {
     updatedAt: position.updated_at,
     protection: {
       status: detail.status,
-      legs: (detail.protectionLegs || []).map(mapProtectionLeg),
+      legs: (detail.protectionLegs || []).map((leg) => ({
+        ...mapProtectionLeg(leg),
+        realizedDriftPercent: protectionDrift(leg, position.entry_avg_price),
+      })),
       transitions: (detail.transitions || []).map(mapTransition),
+      ladder: summarizeLadder(detail.protectionLegs),
     },
   };
 }
@@ -1006,7 +1193,7 @@ function mapClosedTradeItem(position) {
     totalCommission: position.total_commission,
     // This is a normalized broker SLD execution timestamp from the core,
     // never the mutable projection/reconciliation update timestamp.
-    closedAt: position.closed_at || position.updated_at,
+    closedAt: position.closed_at,
     source: alert?.source || null,
     outcome: alert?.status || position.lifecycle_status,
   };
@@ -1109,7 +1296,11 @@ async function submitCloseIntent({ entryCorrelationId, mode, quantity, requestId
   const coreRequest = {
     broker: 'IBKR',
     idempotencyKey: `manual:${requestId}`,
-    intentId: prepared.orderId,
+    // The signal_intents rowid, matching what the entry path sends
+    // (processor.js passes intent.id). This previously sent the `orders`
+    // rowid, so the core persisted a different node_intent_id for closes than
+    // for entries and treated a retried close as CORRELATION_CONFLICT.
+    intentId: received.intentId,
     correlationId: received.correlationId,
     source: 'MANUAL_UI',
     alertId: requestId,
@@ -1161,7 +1352,10 @@ async function drainQueue() {
     // going more than ~2s stale even with no pending TradingView queue work.
     await checkPositions();
     if (!coreSnapshot.ready) return;
-    while (store.findNextReady('tradingview') !== null) {
+    // Both the gate and processNext apply the same expiry budget, so a
+    // backlog accumulated during a core outage is expired here rather than
+    // submitted in a burst on reconnect.
+    while (store.findNextReady('tradingview', WEBHOOK_MAX_AGE_MS) !== null) {
       await processor.processNext({ source: 'tradingview' });
     }
   } finally {
@@ -1178,20 +1372,29 @@ async function handleWebhook(req, res) {
     if (!String(req.headers['content-type'] || '').toLowerCase().startsWith('application/json')) {
       throw new WebhookError('CONTENT_TYPE_REQUIRED', 'Content-Type must be application/json', 415);
     }
-    assertWebhookRate(req);
+    assertWebhookAdmission();
     webhookInFlight += 1;
     counted = true;
     const body = await rawBody(req, WEBHOOK_MAX_BODY);
     const accepted = ingress.handle({ headers: req.headers, rawBody: body });
+    // Charged after ingress.handle proved possession of the webhook secret.
+    assertAuthenticatedWebhookRate(req);
     json(res, accepted.statusCode, accepted.body, accepted.headers);
     setImmediate(() => drainQueue().catch((error) => safeLogger.error('TradingView queue drain failed', { code: machineCode(error.code, 'QUEUE_DRAIN_FAILED') })));
   } catch (error) {
     if (error instanceof WebhookError) {
-      store.recordSecurityEvent({
-        source: 'tradingview',
-        code: machineCode(error.code, 'WEBHOOK_REJECTED'),
-        details: { http_status: error.statusCode },
-      });
+      // An unauthenticated caller must not be able to drive unbounded durable
+      // writes into security_events (synchronous=FULL). Past the per-address
+      // unauthenticated budget the rejection still stands -- only the audit
+      // row is dropped, and the budget itself is the record of the flood.
+      const withinBudget = assertUnauthenticatedWebhookRate(req);
+      if (withinBudget) {
+        store.recordSecurityEvent({
+          source: 'tradingview',
+          code: machineCode(error.code, 'WEBHOOK_REJECTED'),
+          details: { http_status: error.statusCode },
+        });
+      }
     }
     throw error;
   } finally {
@@ -1200,18 +1403,17 @@ async function handleWebhook(req, res) {
 }
 
 async function route(req, res) {
-  const rawHost = (req.headers.host || '').split(':')[0].toLowerCase();
-  const isLoopbackHost = rawHost === '127.0.0.1' || rawHost === 'localhost' || rawHost === '::1' || rawHost === '[::1]';
-  if (req.headers.host && !isLoopbackHost) {
+  // Host must be present AND loopback. Requiring presence matters: an absent
+  // Host (HTTP/1.0, or a hand-rolled client) previously skipped validation
+  // entirely, which left a bypass sitting next to the control that exists to
+  // stop DNS rebinding.
+  if (!isLoopbackHostHeader(req.headers.host)) {
     return json(res, 403, { code: 'FORBIDDEN_HOST', message: 'Forbidden Host header' });
   }
 
-  const forbiddenCsrfTypes = ['application/x-www-form-urlencoded', 'multipart/form-data', 'text/plain'];
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.url.startsWith('/api/')) {
-    const contentType = (req.headers['content-type'] || '').toLowerCase();
-    if (forbiddenCsrfTypes.some((type) => contentType.includes(type))) {
-      return json(res, 415, { code: 'UNSUPPORTED_MEDIA_TYPE', message: 'Simple form media types are forbidden on API endpoints' });
-    }
+    const csrf = crossOriginRejection(req);
+    if (csrf) return json(res, csrf.status, { code: csrf.code, message: csrf.message });
   }
 
   const url = new URL(req.url, 'http://localhost');
@@ -1235,7 +1437,14 @@ async function route(req, res) {
     const profiles = operatorStore.listProfiles();
     const activeProfile = profiles.find((profile) => profile.selected) || null;
     return json(res, 200, {
-      environment: coreSnapshot.environment || activeProfile?.environment || 'PAPER',
+      // Null when the connected session has not reported one. The dashboard
+      // renders that as UNVERIFIED; it must never be defaulted to PAPER here,
+      // because the operator reads this badge to decide whether a real account
+      // is at risk. `activeProfile.environment` is the operator's *dropdown
+      // selection*, which is an intent, not evidence about the live session --
+      // so it is reported separately rather than substituted in.
+      environment: coreSnapshot.environment || null,
+      selectedProfileEnvironment: activeProfile?.environment || null,
       activeProfileId: activeProfile?.id || null,
       mode: MODE,
       webhook: { configured: WEBHOOK_CONFIGURED, endpoint: `http://127.0.0.1:${INGRESS_PORT}/webhooks/tradingview` },
@@ -1460,7 +1669,7 @@ async function route(req, res) {
       });
     }
     const today = newYorkDate(new Date());
-    const closedWithoutExecutionTime = positionSnapshot.items.some((position) => position.lifecycle_status === 'CLOSED' && !newYorkDate(position.closed_at || position.updated_at));
+    const closedWithoutExecutionTime = positionSnapshot.items.some((position) => position.lifecycle_status === 'CLOSED' && !newYorkDate(position.closed_at));
     if (closedWithoutExecutionTime) {
       return json(res, 200, {
         items: null, positionsStatus: 'UNAVAILABLE', checkedAt: positionSnapshot.checkedAt,
