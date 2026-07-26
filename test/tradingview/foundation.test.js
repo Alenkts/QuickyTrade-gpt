@@ -18,7 +18,7 @@ import {
 } from '../../src/tradingview/index.js';
 
 const NOW = new Date('2026-07-18T15:00:00.000Z');
-const SECRET = 'test-webhook-secret';
+const SECRET = 'test-webhook-secret-32-chars-long-9f4e2a';
 const BODY_AUTH_SECRET = 'body-token-with-more-than-32-random-characters-9f4e2a';
 
 function payload(overrides = {}) {
@@ -133,12 +133,12 @@ test('extended payload validation enforces open, close, nested, and configured r
     'entry-1',
   );
 
-  const missingOpen = payload({ alert_id: 'missing-open' });
-  delete missingOpen.target_dte;
-  assert.throws(
-    () => parseAndValidatePayload(Buffer.from(JSON.stringify(missingOpen)), { now: NOW }),
-    (error) => error.code === 'MISSING_OPEN_FIELDS',
-  );
+  const minimalOpen = payload({ alert_id: 'minimal-open' });
+  delete minimalOpen.target_dte;
+  delete minimalOpen.strike_policy;
+  const parsedMinimal = parseAndValidatePayload(Buffer.from(JSON.stringify(minimalOpen)), { now: NOW });
+  assert.equal(parsedMinimal.target_dte, 0);
+  assert.deepEqual(parsedMinimal.strike_policy, { type: 'TARGET_RANGE' });
 
   const missingCloseReference = { ...close, alert_id: 'missing-close' };
   delete missingCloseReference.entry_alert_id;

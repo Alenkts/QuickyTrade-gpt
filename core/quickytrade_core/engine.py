@@ -959,7 +959,6 @@ class ExecutionEngine:
         candidates = candidate_strikes(
             chain, spot=spot, right=right, count=self.config.strike_candidate_count,
         )
-        now = self._now()
         metric_by_strike: dict[Decimal, Decimal] = {}
         for candidate in candidates:
             try:
@@ -973,8 +972,9 @@ class ExecutionEngine:
                     multiplier=chain.multiplier,
                 )
                 candidate_quote = self.transport.quote(candidate_contract)
+                candidate_now = self._now()
                 bid, ask = validate_quote(
-                    candidate_quote, now=now, max_age_seconds=self.config.max_quote_age.total_seconds()
+                    candidate_quote, now=candidate_now, max_age_seconds=self.config.max_quote_age.total_seconds()
                 )
             except (SelectionError, BrokerDefinitiveError):
                 continue

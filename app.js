@@ -507,7 +507,14 @@ function buildActiveTradeRow(trade) {
   const partialButton = element('button', 'PARTIAL CLOSE', 'secondary');
   partialButton.type = 'button';
   partialButton.title = 'Reduce-only: never exceeds verified long quantity minus working exits.';
-  partialButton.addEventListener('click', () => submitPartialClose(trade, Number(qtyInput.value)));
+  partialButton.addEventListener('click', () => {
+    const qty = Number(qtyInput.value);
+    if (!Number.isInteger(qty) || qty < 1) {
+      showToast('Enter a valid positive integer quantity for partial close.', 'error');
+      return;
+    }
+    openPartialCloseConfirm(trade, qty);
+  });
   const flattenButton = element('button', 'FLATTEN', 'secondary flatten-button');
   flattenButton.type = 'button';
   flattenButton.title = 'Cancels every working protection leg, then sells the entire remaining quantity.';
@@ -752,13 +759,13 @@ function renderRuntime() {
   const ledgerReady = runtime.ledger?.ready === true;
   const paperExecution = mode === 'paper_tws';
   const profile = selectedProfile();
-  const environment = profile?.environment || runtime.environment || 'PAPER';
+  const environment = runtime.core?.environment || profile?.environment || 'UNVERIFIED';
   const isLive = environment === 'LIVE';
   const usable = profileIsReady(profile);
 
   setText('#webhookStatus', configured ? 'READY' : 'NOT CONFIGURED');
   setText('#executionStatus', paperExecution
-    ? `${isLive ? 'LIVE SESSION' : 'PAPER TWS'} · ${usable ? 'VERIFIED' : 'LOCKED'}`
+    ? `${isLive ? 'LIVE SESSION' : (environment === 'UNVERIFIED' ? 'UNVERIFIED SESSION' : 'PAPER TWS')} · ${usable ? 'VERIFIED' : 'LOCKED'}`
     : 'CAPTURE ONLY');
   setText('#coreStatus', coreReady ? 'ADAPTER READY' : 'UNAVAILABLE');
   setText('#accountStatus', runtime.core?.accountMask || 'Unavailable');
@@ -1319,6 +1326,20 @@ async function submitPartialClose(trade, quantity) {
   }
 }
 
+function openPartialCloseConfirm(trade, quantity) {
+  state.pendingPartialClose = { trade, quantity };
+  const dialog = $('#partialCloseConfirmDialog');
+  if (dialog) {
+    setText('#partialCloseSummary', `${display(trade.symbol)} · ${quantity} contract(s) · account ${display(trade.account)}`);
+    dialog.showModal();
+  } else {
+    const confirmed = window.confirm(`Confirm reduce-only partial close of ${quantity} contract(s) for ${display(trade.symbol)}?`);
+    if (confirmed) {
+      submitPartialClose(trade, quantity);
+    }
+  }
+}
+
 // FLATTEN is the most consequential position action in this app (cancels
 // every protection leg, then sells the entire remaining quantity) -- it gets
 // its own explicitly-confirmed dialog rather than a plain button, the same
@@ -1467,6 +1488,33 @@ $('#flattenConfirmDialog').addEventListener('click', (event) => {
   }
 });
 $('#confirmFlatten').addEventListener('click', submitFlatten);
+
+const closePartialModal = () => {
+  state.pendingPartialClose = null;
+  const dialog = $('#partialCloseConfirmDialog');
+  if (dialog && typeof dialog.close === 'function') dialog.close();
+};
+
+const cancelPartialBtn = $('#cancelPartialClose');
+if (cancelPartialBtn) cancelPartialBtn.addEventListener('click', closePartialModal);
+const closePartialBtn = $('#closePartialDialog');
+if (closePartialBtn) closePartialBtn.addEventListener('click', closePartialModal);
+const partialModal = $('#partialCloseConfirmDialog');
+if (partialModal) {
+  partialModal.addEventListener('click', (event) => {
+    if (event.target === partialModal) closePartialModal();
+  });
+}
+const confirmPartialBtn = $('#confirmPartialClose');
+if (confirmPartialBtn) {
+  confirmPartialBtn.addEventListener('click', async () => {
+    const pending = state.pendingPartialClose;
+    closePartialModal();
+    if (pending?.trade && pending?.quantity) {
+      await submitPartialClose(pending.trade, pending.quantity);
+    }
+  });
+}
 
 $('#copyEndpoint').addEventListener('click', async () => {
   try {

@@ -1,0 +1,97 @@
+curl -i http://127.0.0.1:4180/webhooks/tradingview \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"auth_token\": \"${QT_WEBHOOK_SECRET:-replace-with-your-secret}\",
+    \"schema_version\": \"1\",
+    \"alert_id\": \"test-qqq-call-$(date +%s)\",
+    \"sent_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+    \"strategy_id\": \"qqq-alerts\",
+    \"strategy_version\": \"2026.07.18\",
+    \"action\": \"OPEN_LONG_CALL\",
+    \"ticker\": \"QQQ\",
+    \"target_dte\": 0,
+    \"strike_policy\": { \"type\": \"ATM_OFFSET\", \"offset\": 1 },
+    \"risk_hint\": { \"max_contracts\": 1 }
+  }"
+
+
+QT_TRADING_MODE=paper_tws
+QT_IBKR_PORT=4002
+
+# Using QT_WEBHOOK_SECRET env variable:
+export QT_WEBHOOK_SECRET='replace-with-your-actual-secret'
+npm run test:alert
+
+
+# Using default parameters (OPEN_LONG_CALL for QQQ):
+bash scripts/send_test_alert.sh
+
+# Or passing custom parameters:
+# bash scripts/send_test_alert.sh [ACTION] [TICKER] [SECRET] [PORT]
+bash scripts/send_test_alert.sh OPEN_LONG_CALL SPY 88971365a10c69bc9f8343b63d03bf4291be05904587adea804a8c3f3c30b7fa 4180
+
+export QT_WEBHOOK_SECRET='test12345'
+export QT_TRADING_MODE='capture_only'
+npm start
+
+
+export QT_WEBHOOK_SECRET='88971365a10c69bc9f8343b63d03bf4291be05904587adea804a8c3f3c30b7fa'
+export QT_TRADING_MODE='capture_only'
+npm run desktop:tauri:dev
+
+
+{
+  "auth_token": "88971365a10c69bc9f8343b63d03bf4291be05904587adea804a8c3f3c30b7fa",
+  "schema_version": "1",
+  "alert_id": "tv-{{ticker}}-{{timenow}}",
+  "sent_at": "{{timenow}}",
+  "strategy_id": "my-tradingview-strategy",
+  "strategy_version": "1.0",
+  "action": "OPEN_LONG_PUT",
+  "ticker": "{{ticker}}",
+  "target_dte": 0,
+  "strike_policy": {
+    "type": "ATM_OFFSET",
+    "offset": 1
+  }
+}
+
+
+TARGET_RANGE
+
+
+{
+  "auth_token": "88971365a10c69bc9f8343b63d03bf4291be05904587adea804a8c3f3c30b7fa",
+  "schema_version": "1",
+  "alert_id": "{{timenow}}",
+  "sent_at": "{{timenow}}",
+  "strategy_id": "my-strategy",
+  "strategy_version": "1.0",
+  "action": "OPEN_LONG_PUT",
+  "ticker": "{{ticker}}",
+  "target_dte": 0,
+  "strike_policy": {
+    "type": "ATM_OFFSET",
+    "offset": 1
+  },
+  "risk_hint": {
+    "max_contracts": 5,
+    "capital_per_trade_dollars": 2000
+  }
+}
+
+
+{
+  "auth_token": "88971365a10c69bc9f8343b63d03bf4291be05904587adea804a8c3f3c30b7fa",
+  "schema_version": "1",
+  "alert_id": "{{timenow}}",
+  "sent_at": "{{timenow}}",
+  "strategy_id": "my-strategy",
+  "strategy_version": "1.0",
+  "action": "OPEN_LONG_PUT",
+  "ticker": "{{ticker}}",
+  "target_dte": 0,
+  "strike_policy": {
+    "type": "TARGET_RANGE"
+  }
+}

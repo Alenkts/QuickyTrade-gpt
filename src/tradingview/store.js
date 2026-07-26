@@ -267,11 +267,24 @@ export class TradingViewStore {
     });
   }
 
-  findNextReady(source) {
-    const row = source === undefined
-      ? this.db.prepare(`SELECT id FROM signal_intents WHERE status = 'READY' AND execution_eligible = 1 ORDER BY id LIMIT 1`).get()
-      : this.db.prepare(`SELECT id FROM signal_intents WHERE status = 'READY' AND execution_eligible = 1 AND source = ? ORDER BY id LIMIT 1`).get(source);
-    return row ? Number(row.id) : null;
+  findNextReady(source, maxAgeMs = null) {
+    const query = source === undefined
+      ? `SELECT id, created_at FROM signal_intents WHERE status = 'READY' AND execution_eligible = 1 ORDER BY id LIMIT 1`
+      : `SELECT id, created_at FROM signal_intents WHERE status = 'READY' AND execution_eligible = 1 AND source = ? ORDER BY id LIMIT 1`;
+    const row = source === undefined ? this.db.prepare(query).get() : this.db.prepare(query).get(source);
+    if (!row) return null;
+    if (maxAgeMs !== null && maxAgeMs > 0 && row.created_at) {
+      const ageMs = Date.now() - new Date(row.created_at).getTime();
+      if (ageMs > maxAgeMs) {
+        const now = asIso(this.clock);
+        this.#transaction(() => {
+          this.db.prepare(`UPDATE signal_intents SET status = 'EXPIRED', updated_at = ? WHERE id = ?`).run(now, row.id);
+          this.#event(row.id, 'SIGNAL_EXPIRED', { reason: 'EXCEEDED_MAX_AGE_IN_QUEUE', age_ms: ageMs }, now);
+        });
+        return this.findNextReady(source, maxAgeMs);
+      }
+    }
+    return Number(row.id);
   }
 
   prepareSubmission(intentId) {
@@ -378,7 +391,15 @@ export class TradingViewStore {
   // intent has that exact correlation_id.
   getAlertStatusByCorrelationId(correlationId) {
     if (typeof correlationId !== 'string' || !correlationId) return null;
-    const row = this.db.prepare(`SELECT * FROM signal_intents WHERE correlation_id = ?`).get(correlationId);
+    let row = this.db.prepare(`SELECT * FROM signal_intents WHERE correlation_id = ?`).get(correlationId);
+    if (!row) {
+      const orderRow = this.db.prepare(`
+        SELECT intent_id FROM orders WHERE idempotency_key = ? OR intent_id = ?
+      `).get(correlationId, correlationId);
+      if (orderRow) {
+        row = this.db.prepare(`SELECT * FROM signal_intents WHERE id = ?`).get(orderRow.intent_id);
+      }
+    }
     if (!row) return null;
     const order = this.db.prepare(`
       SELECT id, attempt_number, idempotency_key, status, broker, broker_order_id, error_code, created_at, updated_at

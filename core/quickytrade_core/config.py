@@ -45,6 +45,22 @@ class CoreConfig:
     max_option_spread_percent: Decimal = Decimal("0.20")
     max_contract_premium_dollars: Decimal = Decimal("500")
     max_contracts_per_order: int = 1
+    # Minimum acceptable option premium (per share, i.e. the quoted mid) for a
+    # NEW entry. Sub-dollar 0DTE premium makes IBKR's per-contract commission a
+    # dominant share of gross P&L (observed: $1.90 commission against $3.00
+    # gross on a 0.11 entry -- 63%), and one tick is a double-digit percentage
+    # of the position, so the configured take-profit/stop percentages cannot be
+    # expressed accurately at that price. Blocks with PREMIUM_BELOW_MINIMUM
+    # rather than silently accepting economics the policy cannot express.
+    # Entries only -- never applied to a close, protection leg, or trail.
+    min_entry_premium: Decimal = Decimal("1.00")
+    # Declaration-only: the per-trade capital budget the operator intends to
+    # inject with each open (from the Node connection profile's
+    # capital_per_trade_dollars). The core never sizes from this value -- it
+    # exists so a budget that could never bind, because
+    # max_contracts_per_order is still at its conservative default of 1, is
+    # rejected at startup instead of silently producing one-contract orders.
+    expected_capital_per_trade_dollars: Decimal | None = None
     max_signal_age: timedelta = timedelta(minutes=5)
     max_signal_future_skew: timedelta = timedelta(seconds=30)
     exchange_timezone: str = "America/New_York"
@@ -167,7 +183,7 @@ class CoreConfig:
             state_db_path=Path(os.environ.get(
                 "QT_CORE_STATE_DB",
                 str(Path.home() / ".quickytrade" / "core-submissions.sqlite3"),
-            )),
+            )).expanduser(),
             service_token=os.environ.get("QT_CORE_TOKEN", ""),
             http_host=os.environ.get("QT_CORE_HTTP_HOST", "127.0.0.1"),
             http_port=int(os.environ.get("QT_CORE_HTTP_PORT", "8765")),

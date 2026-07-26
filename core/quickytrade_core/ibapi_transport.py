@@ -760,12 +760,13 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
             pending.values[0]["delta"] = Decimal(str(delta))
 
     def position(self, account: str, contract, position, avgCost: float) -> None:  # noqa: N802
-        self._positions.append(Position(
-            account=str(account),
-            contract=_qualified_contract_only(contract),
-            quantity=Decimal(str(position)),
-            average_cost=Decimal(str(avgCost)) if avgCost is not None else None,
-        ))
+        with self._lock:
+            self._positions.append(Position(
+                account=str(account),
+                contract=_qualified_contract_only(contract),
+                quantity=Decimal(str(position)),
+                average_cost=Decimal(str(avgCost)) if avgCost is not None else None,
+            ))
 
     def positionEnd(self) -> None:  # noqa: N802
         self._position_event.set()
@@ -948,8 +949,9 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
             pending.event.set()
 
     def _refresh_positions(self) -> None:
-        self._positions = []
-        self._position_event.clear()
+        with self._lock:
+            self._positions = []
+            self._position_event.clear()
         self.reqPositions()
         if not self._position_event.wait(self.config.request_timeout_seconds):
             self._reconciled = False
@@ -957,8 +959,9 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
         self.cancelPositions()
 
     def _refresh_working_orders(self) -> None:
-        self._working_orders = {}
-        self._open_order_event.clear()
+        with self._lock:
+            self._working_orders = {}
+            self._open_order_event.clear()
         self.reqAllOpenOrders()
         if not self._open_order_event.wait(self.config.request_timeout_seconds):
             self._reconciled = False

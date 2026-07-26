@@ -290,6 +290,21 @@
       </div>
     </dialog>
 
+    <dialog id="partialCloseConfirmDialog" class="flatten-dialog">
+      <div class="panel-title">
+        <span>CONFIRM PARTIAL CLOSE</span>
+        <button class="text-button" id="closePartialDialog" type="button">CLOSE ✕</button>
+      </div>
+      <div class="settings-body">
+        <p class="field-note" id="partialCloseSummary">Unavailable</p>
+        <p class="field-note flatten-warning"><strong>This submits a reduce-only sell for the requested quantity. Fills cannot be undone.</strong></p>
+        <div class="form-actions-buttons">
+          <button class="secondary" id="cancelPartialClose" type="button">CANCEL</button>
+          <button class="primary danger" id="confirmPartialClose" type="button">CONFIRM PARTIAL CLOSE</button>
+        </div>
+      </div>
+    </dialog>
+
     <footer>
       <span>IBKR IS THE AUTHORITY FOR ORDERS, FILLS, FEES, POSITIONS, AND ACCOUNT VALUES</span>
       <span class="spacer"></span>

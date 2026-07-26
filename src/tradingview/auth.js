@@ -17,7 +17,7 @@ function constantTimeTextEqual(left, right) {
 }
 
 function validHmac(headers, rawBody, hmacSecret) {
-  if (!((typeof hmacSecret === 'string' || Buffer.isBuffer(hmacSecret)) && hmacSecret.length > 0)) return false;
+  if (!((typeof hmacSecret === 'string' || Buffer.isBuffer(hmacSecret)) && hmacSecret.length >= 32)) return false;
   const supplied = headerValue(headers, 'x-tradingview-signature');
   if (typeof supplied !== 'string') return false;
   const match = /^sha256=([a-fA-F0-9]{64})$/.exec(supplied.trim());
@@ -27,7 +27,7 @@ function validHmac(headers, rawBody, hmacSecret) {
 }
 
 function validBearer(headers, bearerSecret) {
-  if (!(typeof bearerSecret === 'string' && bearerSecret.length > 0)) return false;
+  if (!(typeof bearerSecret === 'string' && bearerSecret.length >= 32)) return false;
   const supplied = headerValue(headers, 'authorization');
   if (typeof supplied !== 'string') return false;
   const match = /^Bearer\s+(.+)$/i.exec(supplied.trim());

@@ -296,7 +296,7 @@ const twsAdapter = {
     // contract) would otherwise reach the core and be rejected as unrecognized.
     const signal = { ...(request.signal || {}) };
     if (!signal.capital_per_trade_dollars && (request.source === 'tradingview' || !request.source)) {
-      const activeProfile = store.getSelectedProfile() || store.getProfile('paper-tws');
+      const activeProfile = operatorStore.getSelectedProfile() || operatorStore.getProfile('paper-tws');
       const appCapital = activeProfile?.capitalPerTradeDollars || process.env.QT_CAPITAL_PER_TRADE_DOLLARS || null;
       if (appCapital) {
         signal.capital_per_trade_dollars = String(appCapital);
@@ -935,6 +935,13 @@ function computeDailyPnl(items) {
   };
 }
 
+function maskAccount(account) {
+  if (!account || typeof account !== 'string') return account;
+  const trimmed = account.trim();
+  if (trimmed.length <= 4) return '****';
+  return `${trimmed.slice(0, 2)}${'*'.repeat(Math.max(1, trimmed.length - 5))}${trimmed.slice(-3)}`;
+}
+
 async function mapActiveTradeItem(position) {
   const alert = lookupOriginatingAlert(position.correlation_id);
   const detail = await fetchCorePositionDetail(position.correlation_id);
@@ -949,7 +956,7 @@ async function mapActiveTradeItem(position) {
   const right = position.right || rightFromOpenAction(alert);
   return {
     correlationId: position.correlation_id,
-    account: position.account,
+    account: maskAccount(position.account),
     conId: position.con_id,
     symbol: position.symbol,
     right,
@@ -987,7 +994,7 @@ function mapClosedTradeItem(position) {
   const right = position.right || rightFromOpenAction(alert);
   return {
     correlationId: position.correlation_id,
-    account: position.account,
+    account: maskAccount(position.account),
     symbol: position.symbol,
     right,
     strike: position.strike || null,
@@ -1193,6 +1200,20 @@ async function handleWebhook(req, res) {
 }
 
 async function route(req, res) {
+  const rawHost = (req.headers.host || '').split(':')[0].toLowerCase();
+  const isLoopbackHost = rawHost === '127.0.0.1' || rawHost === 'localhost' || rawHost === '::1' || rawHost === '[::1]';
+  if (req.headers.host && !isLoopbackHost) {
+    return json(res, 403, { code: 'FORBIDDEN_HOST', message: 'Forbidden Host header' });
+  }
+
+  const forbiddenCsrfTypes = ['application/x-www-form-urlencoded', 'multipart/form-data', 'text/plain'];
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.url.startsWith('/api/')) {
+    const contentType = (req.headers['content-type'] || '').toLowerCase();
+    if (forbiddenCsrfTypes.some((type) => contentType.includes(type))) {
+      return json(res, 415, { code: 'UNSUPPORTED_MEDIA_TYPE', message: 'Simple form media types are forbidden on API endpoints' });
+    }
+  }
+
   const url = new URL(req.url, 'http://localhost');
 
   if (url.pathname === '/healthz') {
@@ -1533,9 +1554,24 @@ async function route(req, res) {
   }
   if (url.pathname.startsWith('/api/')) return json(res, 404, { code: 'API_ROUTE_NOT_FOUND', message: 'API route not found' });
 
-  const pathname = url.pathname === '/' ? 'index.html' : normalize(url.pathname).replace(/^\.{2}(\/|\\|$)/, '');
-  const file = join(ROOT, pathname);
+  const rawPath = url.pathname === '/' ? 'index.html' : normalize(url.pathname).replace(/^\.{2}(\/|\\|$)/, '');
+  if (rawPath.startsWith('.') || rawPath.includes('/.') || rawPath.includes('\\.')) {
+    return json(res, 403, { code: 'FORBIDDEN', message: 'Forbidden' });
+  }
+
+  const file = resolve(join(ROOT, rawPath));
   if (!file.startsWith(ROOT)) return json(res, 403, { code: 'FORBIDDEN', message: 'Forbidden' });
+
+  const allowedExtensions = new Set(['.html', '.js', '.css', '.json', '.svg', '.ico', '.png', '.woff2']);
+  const ext = extname(file).toLowerCase();
+  const relPath = file.slice(ROOT.length).replace(/^[/\\]/, '');
+
+  const isAllowedRootFile = ['index.html', 'app.js', 'operator.css', 'styles.css'].includes(relPath);
+  const isAllowedPublicFolder = relPath.startsWith('public/') || relPath.startsWith('public\\');
+
+  if (!allowedExtensions.has(ext) || (!isAllowedRootFile && !isAllowedPublicFolder)) {
+    return json(res, 403, { code: 'FORBIDDEN', message: 'Access to this path is forbidden' });
+  }
   const types = {
     '.html': 'text/html; charset=utf-8',
     '.js': 'text/javascript; charset=utf-8',

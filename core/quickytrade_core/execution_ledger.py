@@ -107,22 +107,36 @@ _VALID_LIFECYCLE_STATUSES = frozenset(
 def _normalized_execution_time(value: str | None) -> str | None:
     """Return an absolute execution timestamp or None when IBKR evidence is ambiguous.
 
-    A legacy TWS execution callback may omit its timezone. Reporting in New
-    York time does not prove that the callback used New York time, so a naïve
-    value is deliberately unavailable until the transport supplies an
-    explicit configured execution timezone. An unknown format fails closed
-    rather than using receipt/reconciliation time as a proxy for the fill.
+    Parses ISO timestamps as well as standard IBKR execution format
+    ("20260724 10:17:23 US/Eastern" or "20260724 10:17:23").
+    Fails closed to None if unparseable.
     """
     if not value:
         return None
-    text = str(value).strip().replace("  ", " ")
+    text = str(value).strip()
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
     except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        pass
+
+    parts = text.split()
+    if len(parts) >= 2:
+        date_str, time_str = parts[0], parts[1]
+        tz_str = parts[2] if len(parts) >= 3 else "America/New_York"
+        if tz_str == "US/Eastern":
+            tz_str = "America/New_York"
+        date_clean = date_str.replace("-", "")
+        if len(date_clean) == 8 and len(time_str) == 8:
+            dt_str = f"{date_clean[:4]}-{date_clean[4:6]}-{date_clean[6:8]} {time_str}"
+            try:
+                tz = ZoneInfo(tz_str)
+                dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz)
+                return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+            except Exception:
+                pass
+    return None
 
 
 @dataclass(frozen=True)

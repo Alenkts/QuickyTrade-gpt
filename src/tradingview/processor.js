@@ -11,18 +11,19 @@ function isAmbiguous(error) {
 }
 
 export class IbkrAlertProcessor {
-  constructor({ store, ibkrAdapter, logger = undefined }) {
+  constructor({ store, ibkrAdapter, maxAgeMs = null, logger = undefined }) {
     if (!store) throw new TypeError('store is required');
     if (typeof ibkrAdapter?.placeTrade !== 'function') {
       throw new TypeError('ibkrAdapter.placeTrade is required');
     }
     this.store = store;
     this.ibkrAdapter = ibkrAdapter;
+    this.maxAgeMs = maxAgeMs;
     this.logger = logger;
   }
 
   async processNext({ source = 'tradingview' } = {}) {
-    const intentId = this.store.findNextReady(source);
+    const intentId = this.store.findNextReady(source, this.maxAgeMs);
     return intentId === null ? null : this.processIntent(intentId);
   }
 

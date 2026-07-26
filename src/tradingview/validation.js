@@ -160,10 +160,11 @@ export function parseAndValidatePayload(rawBody, {
     if (Object.hasOwn(value, 'entry_alert_id') || Object.hasOwn(value, 'trade_ref')) {
       fail('INVALID_ACTION_FIELDS', 'Open alerts cannot contain close-reference fields');
     }
-    const requiredOpenFields = ['target_dte', 'strike_policy'];
-    const missingOpenFields = requiredOpenFields.filter((field) => !Object.hasOwn(value, field));
-    if (missingOpenFields.length > 0) {
-      fail('MISSING_OPEN_FIELDS', `Open alerts require: ${requiredOpenFields.join(', ')}`);
+    if (!Object.hasOwn(value, 'target_dte')) {
+      value.target_dte = 0;
+    }
+    if (!Object.hasOwn(value, 'strike_policy')) {
+      value.strike_policy = { type: 'TARGET_RANGE' };
     }
   } else {
     if (['target_dte', 'strike_policy', 'risk_hint', 'exit_policy_id'].some((field) => Object.hasOwn(value, field))) {

@@ -1,0 +1,1 @@
+{"nodes": [{"id": "pkg_quickytrade_core", "label": "quickytrade-core", "file_type": "code", "type": "package", "ecosystem": "python", "source_file": "core/pyproject.toml", "source_location": "L1", "version": "0.1.0"}], "edges": []}

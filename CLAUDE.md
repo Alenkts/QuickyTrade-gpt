@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-QuickyTrade is an **IBKR-only, paper-first** desktop trading control center — not a signal/strategy generator. It ingests TradingView webhook alerts and manual proposals, durably records them, and (behind heavy gating) can submit **paper-only** IBKR orders. Live trading and automated position management are not implemented. Schwab, Robinhood, and built-in/Python strategy execution are out of scope.
+QuickyTrade is an **IBKR-only, paper-first** desktop trading control center — not a signal/strategy generator. It ingests TradingView webhook alerts and manual proposals, durably records them, and submits IBKR orders under strict safety invariants. Live trading is supported only with explicit multi-step operator confirmation (live `U...` account allowlisting, confirmation phrase, and session verification), defaulting strictly to paper execution (`DU...`). Automated trade protection and position lifecycle transitions are fully implemented. Schwab, Robinhood, and built-in/Python strategy execution are out of scope.
 
 ## Stack & structure
 
