@@ -45,8 +45,12 @@ class ExecutionLedgerTests(unittest.TestCase):
     def _claim_and_evidence(
         self, correlation_id: str, *, order_ref: str, quantity: int = 5,
         account: str = "DU12345", con_id: int = 501, symbol: str = "QQQ",
+        management_mode: str = "ENTRY_ONLY", management_policy: dict | None = None,
     ) -> None:
-        self.registry.claim(correlation_id, 1, "hash-" + correlation_id)
+        self.registry.claim(
+            correlation_id, 1, "hash-" + correlation_id,
+            management_mode=management_mode, management_policy=management_policy,
+        )
         self.registry.record_broker_call_evidence(
             correlation_id,
             account=account,
@@ -218,6 +222,66 @@ class ExecutionLedgerTests(unittest.TestCase):
         state = self.ledger.position_state("tradingview:partial1")
         self.assertEqual("PARTIALLY_FILLED", state["lifecycle_status"])
         self.assertEqual("2", state["open_quantity"])
+
+    # ---- sweep_candidate_correlation_ids (protection/transition gating) ---
+
+    def _app_managed_policy(self) -> dict:
+        return {
+            "policyId": "test-policy-v1", "version": 1, "stopLossPercent": "25",
+            "takeProfitLevels": [
+                {"levelId": "TP1", "triggerPercent": "20", "allocationPercent": "50"},
+                {"levelId": "TP2", "triggerPercent": "40", "allocationPercent": "50"},
+            ],
+            "transitions": [{"after": "TP1", "action": "MOVE_STOP_TO_BREAKEVEN"}],
+        }
+
+    def test_sweep_candidates_include_a_fully_filled_app_managed_position(self):
+        self._claim_and_evidence(
+            "tradingview:sweep-filled", order_ref="QTsweepfilled", quantity=2,
+            management_mode="APP_MANAGED", management_policy=self._app_managed_policy(),
+        )
+        self.ledger.record_execution(self._execution("e-sweep-filled", order_ref="QTsweepfilled", shares="2"))
+        self.assertEqual("FILLED", self.ledger.position_state("tradingview:sweep-filled")["lifecycle_status"])
+        self.assertIn("tradingview:sweep-filled", self.ledger.sweep_candidate_correlation_ids())
+
+    def test_sweep_candidates_include_a_closing_app_managed_position(self):
+        # Mirrors a real TP1-of-3 partial exit: one contract closed, two still
+        # open -- lifecycle_status is CLOSING, not FILLED, immediately after
+        # that fill. This is the exact state MOVE_STOP_TO_BREAKEVEN needs to
+        # observe in order to ever run.
+        self._claim_and_evidence(
+            "tradingview:sweep-closing", order_ref="QTsweepclosing", quantity=3,
+            management_mode="APP_MANAGED", management_policy=self._app_managed_policy(),
+        )
+        self.ledger.record_execution(self._execution("e-sweep-closing-open", order_ref="QTsweepclosing", shares="3"))
+        self.ledger.record_execution(ExecutionRecord(
+            exec_id="e-sweep-closing-exit", order_ref="QTsweepclosing", order_id=701, perm_id=901,
+            account="DU12345", con_id=501, symbol="QQQ", side="SLD", shares="1", price="1.50",
+            cum_qty="1", avg_price="1.50", exec_time="20260727  14:55:16", source="LIVE_CALLBACK", raw={},
+        ))
+        state = self.ledger.position_state("tradingview:sweep-closing")
+        self.assertEqual("CLOSING", state["lifecycle_status"])
+        self.assertIn("tradingview:sweep-closing", self.ledger.sweep_candidate_correlation_ids())
+
+    def test_sweep_candidates_exclude_a_closed_position(self):
+        self._claim_and_evidence(
+            "tradingview:sweep-closed", order_ref="QTsweepclosed", quantity=1,
+            management_mode="APP_MANAGED", management_policy=self._app_managed_policy(),
+        )
+        self.ledger.record_execution(self._execution("e-sweep-closed-open", order_ref="QTsweepclosed", shares="1"))
+        self.ledger.record_execution(ExecutionRecord(
+            exec_id="e-sweep-closed-exit", order_ref="QTsweepclosed", order_id=701, perm_id=901,
+            account="DU12345", con_id=501, symbol="QQQ", side="SLD", shares="1", price="1.50",
+            cum_qty="1", avg_price="1.50", exec_time="20260727  14:55:16", source="LIVE_CALLBACK", raw={},
+        ))
+        self.assertEqual("CLOSED", self.ledger.position_state("tradingview:sweep-closed")["lifecycle_status"])
+        self.assertNotIn("tradingview:sweep-closed", self.ledger.sweep_candidate_correlation_ids())
+
+    def test_sweep_candidates_exclude_entry_only_positions_even_when_filled(self):
+        self._claim_and_evidence("tradingview:sweep-entry-only", order_ref="QTsweepentryonly", quantity=1)
+        self.ledger.record_execution(self._execution("e-sweep-entry-only", order_ref="QTsweepentryonly", shares="1"))
+        self.assertEqual("FILLED", self.ledger.position_state("tradingview:sweep-entry-only")["lifecycle_status"])
+        self.assertNotIn("tradingview:sweep-entry-only", self.ledger.sweep_candidate_correlation_ids())
 
     def test_closed_position_uses_latest_broker_sell_execution_time_not_cache_update_time(self):
         self._claim_and_evidence("tradingview:closed-time", order_ref="QTclosedtime", quantity=1)

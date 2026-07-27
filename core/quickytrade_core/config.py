@@ -74,7 +74,7 @@ class CoreConfig:
     strike_target_metric: str = "PREMIUM"
     strike_target_lo: Decimal = Decimal("1.00")
     strike_target_hi: Decimal = Decimal("2.50")
-    strike_candidate_count: int = 7
+    strike_candidate_count: int = 5
     live_account_allowlist: frozenset[str] = frozenset()
     live_trading_confirmed: bool = False
     # How often the background reconciliation sweep re-runs (see __main__.py).
@@ -224,7 +224,7 @@ class CoreConfig:
             strike_target_metric=os.environ.get("QT_STRIKE_TARGET_METRIC", "PREMIUM"),
             strike_target_lo=Decimal(os.environ.get("QT_STRIKE_TARGET_LO", "1.00")),
             strike_target_hi=Decimal(os.environ.get("QT_STRIKE_TARGET_HI", "2.50")),
-            strike_candidate_count=int(os.environ.get("QT_STRIKE_CANDIDATE_COUNT", "7")),
+            strike_candidate_count=int(os.environ.get("QT_STRIKE_CANDIDATE_COUNT", "5")),
             # Conservative default: unless an operator explicitly raises this via
             # QT_MAX_CONTRACTS_PER_ORDER, behavior is unchanged from before this
             # release (one contract per order).

@@ -433,17 +433,28 @@ class ExecutionLedger:
             rows = self._db.execute("SELECT * FROM position_state ORDER BY updated_at DESC").fetchall()
         return [dict(row) for row in rows]
 
-    def filled_app_managed_correlation_ids(self) -> list[str]:
-        """Candidates for protection placement (Phase 3): every correlation_id
-        whose rebuildable position_state cache currently reads FILLED and
-        whose immutably-snapshotted broker_submissions row opted into
-        APP_MANAGED. Level-triggered re-evaluation (not edge-triggered from a
-        fill callback) relies on this being cheap to recompute every sweep."""
+    def sweep_candidate_correlation_ids(self) -> list[str]:
+        """Candidates for the periodic protection/transition sweep: every
+        correlation_id whose rebuildable position_state cache currently reads
+        FILLED or CLOSING, and whose immutably-snapshotted broker_submissions
+        row opted into APP_MANAGED. CLOSING (a confirmed partial exit, e.g.
+        TP1 filling while TP2/TP3 remain open) must stay a candidate --
+        ExecutionEngine.ensure_transitions() explicitly evaluates FILLED and
+        CLOSING alike (see its own lifecycle_status check), and
+        MOVE_STOP_TO_BREAKEVEN/TRAIL_FRESH_BID only ever have real work to do
+        *after* a take-profit leg has confirmed-filled, which is precisely
+        when the position leaves FILLED for CLOSING. Excluding CLOSING here
+        silently starves both transitions of the correlation_id the moment
+        their trigger condition becomes true. ensure_protection() has its own
+        stricter FILLED-only gate and simply no-ops for CLOSING rows, so
+        widening this candidate set is safe for it too. Level-triggered
+        re-evaluation (not edge-triggered from a fill callback) relies on
+        this being cheap to recompute every sweep."""
         with self._lock:
             rows = self._db.execute(
                 """SELECT p.correlation_id FROM position_state p
                    JOIN broker_submissions s ON s.correlation_id = p.correlation_id
-                   WHERE p.lifecycle_status='FILLED' AND s.management_mode='APP_MANAGED'"""
+                   WHERE p.lifecycle_status IN ('FILLED', 'CLOSING') AND s.management_mode='APP_MANAGED'"""
             ).fetchall()
         return [row["correlation_id"] for row in rows]
 

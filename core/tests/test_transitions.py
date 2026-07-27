@@ -610,6 +610,84 @@ class TransitionsTests(unittest.TestCase):
         self.assertFalse(self.transition_ledger.mark_applying(tid))
         self.assertEqual("APPLYING", self.transition_ledger.get(tid)["status"])
 
+    # ---- real periodic-sweep wiring: a CLOSING (not just FILLED) position -
+    # ---- must still be handed to ensure_transitions() ---------------------
+
+    # Regression test for a production incident: a 3-contract, 3-level
+    # (50/25/25) position with both MOVE_STOP_TO_BREAKEVEN-after-TP1 and
+    # TRAIL_FRESH_BID-after-TP2 configured never received either transition.
+    # Every other test in this file calls self.engine.ensure_transitions()
+    # directly, which cannot catch this class of bug: production only ever
+    # reaches ensure_transitions() for correlation_ids returned by
+    # ExecutionLedger.sweep_candidate_correlation_ids() (see __main__.py's
+    # periodic sweep). That query used to require lifecycle_status=='FILLED'
+    # -- but a TP1 fill on a multi-contract position moves lifecycle_status
+    # straight to CLOSING (some quantity closed, some still open), so the
+    # correlation_id silently and permanently fell out of the sweep the
+    # instant its transitions became eligible to run. This test drives the
+    # same two-step gate production does (list candidates, then only act on
+    # what's returned) rather than calling ensure_transitions() directly.
+    def test_periodic_sweep_gate_still_reaches_transitions_while_a_position_is_closing(self):
+        correlation_id = "manual:transitions-sweep-gate"
+        policy = management_policy(
+            allocations=(50, 25, 25), stop_loss_percent="25",
+            transitions=[
+                {"after": "TP1", "action": "MOVE_STOP_TO_BREAKEVEN"},
+                {"after": "TP2", "action": "TRAIL_FRESH_BID", "distancePercent": "15"},
+            ],
+        )
+        contract = self._seed_filled_position(correlation_id, quantity=3, fill_price="1.25", policy=policy)
+
+        def run_one_sweep_pass() -> None:
+            for candidate_id in self.ledger.sweep_candidate_correlation_ids():
+                self.engine.ensure_protection(candidate_id)
+                self.engine.ensure_transitions(candidate_id)
+
+        # Initial sweep: position is FILLED, not yet CLOSING -- places the
+        # bracket, no transitions are eligible yet.
+        run_one_sweep_pass()
+        stop2_before = self.protection_ledger.get(self._stop_id(correlation_id, "TP2"))
+        stop3_before = self.protection_ledger.get(self._stop_id(correlation_id, "TP3"))
+        self.assertEqual("SUBMITTED", stop2_before["status"])
+        self.assertEqual("SUBMITTED", stop3_before["status"])
+
+        # TP1 fills (1 of 3 contracts) -> lifecycle_status becomes CLOSING,
+        # not FILLED.
+        self._fill_tp_leg(correlation_id, contract, "TP1", quantity=1)
+        self.assertEqual("CLOSING", self.ledger.position_state(correlation_id)["lifecycle_status"])
+        self.assertIn(correlation_id, self.ledger.sweep_candidate_correlation_ids())
+
+        run_one_sweep_pass()
+
+        breakeven_tid = transition_id(correlation_id, "TP1")
+        self.assertEqual("APPLIED", self.transition_ledger.get(breakeven_tid)["status"])
+        # entry_fill_price=1.25, tick 0.05, rounded UP -> 1.25 exactly.
+        stop2_after_be = self.protection_ledger.get(self._stop_id(correlation_id, "TP2"))
+        stop3_after_be = self.protection_ledger.get(self._stop_id(correlation_id, "TP3"))
+        self.assertEqual(Decimal("1.25"), Decimal(stop2_after_be["trigger_price"]))
+        self.assertEqual(Decimal("1.25"), Decimal(stop3_after_be["trigger_price"]))
+
+        # TP2 fills next -> still CLOSING (TP3's contract remains open) ->
+        # still a sweep candidate -> TRAIL_FRESH_BID now fires for STOP:TP3.
+        self.transport.option_quote = Quote(Decimal("2.00"), Decimal("2.03"), NOW, "LIVE")
+        self._fill_tp_leg(correlation_id, contract, "TP2", quantity=1)
+        self.assertEqual("CLOSING", self.ledger.position_state(correlation_id)["lifecycle_status"])
+        self.assertIn(correlation_id, self.ledger.sweep_candidate_correlation_ids())
+
+        run_one_sweep_pass()
+
+        trail_tid = transition_id(correlation_id, "TP2")
+        self.assertEqual("APPLIED", self.transition_ledger.get(trail_tid)["status"])
+        # fresh bid 2.00 * (1 - 15/100) = 1.70, better than the 1.25 breakeven
+        # trigger already resting on STOP:TP3 -> ratchets up again.
+        stop3_after_trail = self.protection_ledger.get(self._stop_id(correlation_id, "TP3"))
+        self.assertEqual(Decimal("1.70"), Decimal(stop3_after_trail["trigger_price"]))
+
+        # TP3 fills last -> fully CLOSED -> correctly drops out of the sweep.
+        self._fill_tp_leg(correlation_id, contract, "TP3", quantity=1)
+        self.assertEqual("CLOSED", self.ledger.position_state(correlation_id)["lifecycle_status"])
+        self.assertNotIn(correlation_id, self.ledger.sweep_candidate_correlation_ids())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,15 @@ ESLint (flat config in `eslint.config.js`) covers the JS side; ruff (`[tool.ruff
 
 No `.env.example` exists; required vars are documented in `README.md` and `core/README.md`. Node side: `QT_WEBHOOK_SECRET`, `QT_TRADING_MODE` (`capture_only`|`paper_tws`), `QT_CORE_TOKEN`, `QT_CORE_URL`, `QT_ALLOWED_TICKERS`/`QT_ALLOWED_SYMBOLS`, `QT_ALLOWED_STRATEGIES`, `QT_DATA_DIR`, `QT_WEBHOOK_INGRESS_PORT`. Python core: `QT_IBKR_PAPER_ACCOUNT`(+`_ALLOWLIST`, must be `DU...` paper accounts — a live `U...` account is hard-rejected), `QT_ALLOWED_SYMBOLS`, `QT_TRADING_CLASS_ALLOWLIST`, `QT_CORE_TOKEN`, optional `QT_IBKR_HOST/PORT/CLIENT_ID`.
 
+## Knowledge graph (`graphify-out/`)
+
+A graphify knowledge graph exists at `graphify-out/graph.json` (gitignored, ~2MB, rebuilt via `/graphify --update`). Use it selectively:
+
+- **Use `graphify query "<question>"` for cross-cutting navigation questions** — "what connects to the protection-leg reconciliation logic", "how does the EXPIRED signal status flow from queue to engine to UI", "what touches `signal_intents`". This is cheaper than an Explore-agent sweep across `core/`, `src/`, and `app.js`/`index.html` for these "where/how do things connect" questions.
+- **Do not use it as a substitute for reading current source before editing.** The graph is a point-in-time summary and can be stale between updates — always read the live file before changing it.
+- **Never `Read` or `cat` `graph.json` directly** — it's raw JSON, hundreds of thousands of tokens. Only go through `graphify query`/`path`/`explain`, which traverse it locally and return a bounded, relevant subgraph.
+- **Re-run `/graphify --update` after commits that touch code/docs** before relying on it for a navigation question — otherwise it silently answers from stale state. Skip it for single-file bug fixes or when the answer is faster to just grep/read directly; the update itself costs tokens and isn't free.
+
 ## Gotchas
 
 - Ports `4173` (private) and `4180` (public webhook ingress) must never be the same — the server throws if they collide. Never expose `4173` externally.

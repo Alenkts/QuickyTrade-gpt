@@ -12,7 +12,7 @@ import logging
 import math
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -296,7 +296,7 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
             )
         return _qualified(details[0])
 
-    def quote(self, contract: QualifiedContract) -> Quote:
+    def quote(self, contract: QualifiedContract, *, include_greeks: bool = True) -> Quote:
         request_id, pending = self._new_request()
         # market_data_type starts UNKNOWN, not "LIVE". Seeding it optimistically
         # meant a subscription that never produced a marketDataType callback --
@@ -314,12 +314,16 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
         self.reqMarketDataType(1)
         # Generic tick 106 requests option-computation ticks (tickOptionComputation,
         # including delta) alongside the plain bid/ask; IBKR ignores it for non-option
-        # contracts, so it is safe to request unconditionally. IBKR rejects snapshot=True
-        # combined with any non-empty generic tick list ("Snapshot market data subscription
-        # is not applicable to generic ticks"), so this must be a streaming request --
-        # tickPrice() already completes the wait once both bid and ask arrive, and the
-        # `finally` below cancels the subscription regardless.
-        self.reqMktData(request_id, _ib_contract(contract), "106", False, False, [])
+        # contracts, so it is safe to request unconditionally when a caller needs delta.
+        # TWS must run its option pricing model before it will emit ticks under "106",
+        # which measurably slows the response -- callers that only need bid/ask (e.g.
+        # PREMIUM-metric strike selection) should pass include_greeks=False. IBKR rejects
+        # snapshot=True combined with any non-empty generic tick list ("Snapshot market
+        # data subscription is not applicable to generic ticks"), so this must be a
+        # streaming request -- tickPrice() already completes the wait once both bid and
+        # ask arrive, and the `finally` below cancels the subscription regardless.
+        generic_ticks = "106" if include_greeks else ""
+        self.reqMktData(request_id, _ib_contract(contract), generic_ticks, False, False, [])
         try:
             self._wait(pending, request_id, "MARKET_DATA_REQUEST_FAILED")
         finally:
@@ -332,6 +336,91 @@ class OfficialIbapiTransport(EWrapper, EClient):  # type: ignore[misc]
             market_data_type=value["market_data_type"],
             delta=value["delta"],
         )
+
+    def qualify_options_concurrent(
+        self,
+        *,
+        underlying: QualifiedContract,
+        expiry: str,
+        strikes: Sequence[Decimal],
+        right: str,
+        exchange: str,
+        trading_class: str,
+        multiplier: str,
+    ) -> list[QualifiedContract | None]:
+        """Qualify multiple option strikes as concurrently outstanding IBKR requests.
+
+        Each strike gets its own reqId and is fired without waiting for the prior
+        one to resolve, so the reader thread can satisfy all of them in parallel;
+        this collects them in the same order as `strikes`. A strike that fails to
+        qualify (ambiguous or rejected) yields `None` at its position rather than
+        raising, so callers can skip it the same way the old one-at-a-time loop did.
+        """
+        pending_requests: list[tuple[int, _Pending]] = []
+        for strike in strikes:
+            contract = Contract()
+            contract.symbol = underlying.symbol
+            contract.secType = "OPT"
+            contract.lastTradeDateOrContractMonth = expiry
+            contract.strike = float(strike)
+            contract.right = right
+            contract.multiplier = multiplier
+            contract.exchange = exchange
+            contract.currency = "USD"
+            contract.tradingClass = trading_class
+            request_id, pending = self._new_request()
+            self.reqContractDetails(request_id, contract)
+            pending_requests.append((request_id, pending))
+        results: list[QualifiedContract | None] = []
+        for request_id, pending in pending_requests:
+            try:
+                self._wait(pending, request_id, "OPTION_QUALIFICATION_FAILED")
+            except BrokerDefinitiveError:
+                results.append(None)
+                continue
+            details = pending.values
+            results.append(_qualified(details[0]) if len(details) == 1 else None)
+        return results
+
+    def quotes_concurrent(
+        self, contracts: Sequence[QualifiedContract], *, include_greeks: bool = True
+    ) -> list[Quote | None]:
+        """Request quotes for multiple contracts as concurrently outstanding IBKR
+        requests -- see `qualify_options_concurrent` for the concurrency rationale.
+        A contract whose quote request fails yields `None` at its position.
+        """
+        generic_ticks = "106" if include_greeks else ""
+        self.reqMarketDataType(1)
+        pending_requests: list[tuple[int, _Pending]] = []
+        for contract in contracts:
+            request_id, pending = self._new_request()
+            pending.values.append({
+                "bid": None, "ask": None, "delta": None,
+                "market_data_type": "UNKNOWN", "received_at": self.clock(),
+                "subscribed_at": self.clock(),
+            })
+            self.reqMktData(request_id, _ib_contract(contract), generic_ticks, False, False, [])
+            pending_requests.append((request_id, pending))
+        try:
+            results: list[Quote | None] = []
+            for request_id, pending in pending_requests:
+                try:
+                    self._wait(pending, request_id, "MARKET_DATA_REQUEST_FAILED")
+                except BrokerDefinitiveError:
+                    results.append(None)
+                    continue
+                value = pending.values[0]
+                results.append(Quote(
+                    bid=value["bid"],
+                    ask=value["ask"],
+                    received_at=value["received_at"],
+                    market_data_type=value["market_data_type"],
+                    delta=value["delta"],
+                ))
+            return results
+        finally:
+            for request_id, _ in pending_requests:
+                self.cancelMktData(request_id)
 
     def market_rule(self, contract: QualifiedContract) -> tuple[PriceIncrement, ...]:
         rule_id = _market_rule_id(contract)

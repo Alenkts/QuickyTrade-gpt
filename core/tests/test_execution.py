@@ -101,12 +101,24 @@ class FakeTransport:
     def qualify_option(self, *, underlying, expiry, strike, right, exchange, trading_class, multiplier):
         return option(str(strike), right, 201 if right == "C" else 202)
 
+    def qualify_options_concurrent(self, *, underlying, expiry, strikes, right, exchange, trading_class, multiplier):
+        return [
+            self.qualify_option(
+                underlying=underlying, expiry=expiry, strike=strike, right=right,
+                exchange=exchange, trading_class=trading_class, multiplier=multiplier,
+            )
+            for strike in strikes
+        ]
+
     def quote(self, contract):
         if contract.sec_type == "STK":
             return self.underlying_quote
         if self.option_quotes_by_strike is not None:
             return self.option_quotes_by_strike.get(contract.strike, self.option_quote)
         return self.option_quote
+
+    def quotes_concurrent(self, contracts, *, include_greeks=True):
+        return [self.quote(contract) for contract in contracts]
 
     def market_rule(self, contract): return self.rules
     def positions(self, account): return tuple(self.position_rows)
@@ -876,7 +888,7 @@ class ExecutionTests(unittest.TestCase):
                 "accountMask": "••••2345",
                 "ibkrHost": "127.0.0.1",
                 "ibkrPort": 7497,
-                "strikeSelection": {"metric": "PREMIUM", "lo": "1.00", "hi": "2.50", "candidateCount": 7},
+                "strikeSelection": {"metric": "PREMIUM", "lo": "1.00", "hi": "2.50", "candidateCount": 5},
             },
             health,
         )

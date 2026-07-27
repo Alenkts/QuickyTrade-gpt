@@ -52,11 +52,16 @@ def _run_periodic_reconciliation(
     interval and the same thread (Phase 3/4 extend Phase 2's thread rather
     than adding new ones). Reconciliation is data capture + resolution only,
     as before. Protection placement and transition application are both
-    level-triggered: every FILLED + APP_MANAGED correlation_id is
-    re-evaluated every sweep (see ExecutionEngine.ensure_protection /
-    ensure_transitions), so a fill landing between two sweeps, or across a
-    restart, is still noticed and acted on the next pass -- never dependent
-    on catching a one-shot fill callback. ensure_transitions() always runs
+    level-triggered: every FILLED-or-CLOSING + APP_MANAGED correlation_id is
+    re-evaluated every sweep (see ExecutionLedger.sweep_candidate_correlation_ids,
+    ExecutionEngine.ensure_protection / ensure_transitions), so a fill landing
+    between two sweeps, or across a restart, is still noticed and acted on the
+    next pass -- never dependent on catching a one-shot fill callback.
+    CLOSING must stay in the candidate set even though ensure_protection()
+    itself only ever acts on FILLED: a take-profit fill (the trigger for
+    MOVE_STOP_TO_BREAKEVEN/TRAIL_FRESH_BID) is exactly what moves a position
+    from FILLED to CLOSING, so excluding CLOSING here would silently stop
+    every transition from ever running. ensure_transitions() always runs
     after ensure_protection() for the same correlation_id within the same
     pass, so any top-up leg ensure_protection() just placed is immediately
     visible to that correlation_id's transition evaluation. Uses
@@ -90,7 +95,7 @@ def _run_periodic_reconciliation(
         except Exception:
             logger.exception("Stale-entry check failed; will retry next interval")
         try:
-            candidates = ledger.filled_app_managed_correlation_ids()
+            candidates = ledger.sweep_candidate_correlation_ids()
         except Exception:
             logger.exception("Listing protection/transition candidates failed; will retry next interval")
             candidates = []

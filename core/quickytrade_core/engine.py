@@ -1017,31 +1017,46 @@ class ExecutionEngine:
         candidates = candidate_strikes(
             chain, spot=spot, right=right, count=self.config.strike_candidate_count,
         )
+        # Candidates are qualified, then quoted, as batches of concurrently
+        # outstanding IBKR requests (not one strike at a time) -- this is the
+        # dominant cost of TARGET_RANGE strike selection, and firing them serially
+        # means paying a full round trip per candidate for both steps. Greeks are
+        # only requested from IBKR when the configured metric actually needs delta;
+        # PREMIUM sizing only needs bid/ask, and asking for computed greeks anyway
+        # measurably slows every one of these requests for data nobody reads.
+        need_greeks = self.config.strike_target_metric == "DELTA"
+        qualified = self.transport.qualify_options_concurrent(
+            underlying=underlying,
+            expiry=expiry,
+            strikes=candidates,
+            right=right,
+            exchange=chain.exchange,
+            trading_class=chain.trading_class,
+            multiplier=chain.multiplier,
+        )
+        quotable = [
+            (strike, contract) for strike, contract in zip(candidates, qualified) if contract is not None
+        ]
+        quotes = self.transport.quotes_concurrent(
+            [contract for _, contract in quotable], include_greeks=need_greeks
+        )
         metric_by_strike: dict[Decimal, Decimal] = {}
-        for candidate in candidates:
+        for (strike, _contract), candidate_quote in zip(quotable, quotes):
+            if candidate_quote is None:
+                continue
             try:
-                candidate_contract = self.transport.qualify_option(
-                    underlying=underlying,
-                    expiry=expiry,
-                    strike=candidate,
-                    right=right,
-                    exchange=chain.exchange,
-                    trading_class=chain.trading_class,
-                    multiplier=chain.multiplier,
-                )
-                candidate_quote = self.transport.quote(candidate_contract)
                 candidate_now = self._now()
                 bid, ask = validate_quote(
                     candidate_quote, now=candidate_now, max_age_seconds=self.config.max_quote_age.total_seconds()
                 )
             except (SelectionError, BrokerDefinitiveError):
                 continue
-            if self.config.strike_target_metric == "DELTA":
+            if need_greeks:
                 if candidate_quote.delta is None or not candidate_quote.delta.is_finite():
                     continue
-                metric_by_strike[candidate] = abs(candidate_quote.delta)
+                metric_by_strike[strike] = abs(candidate_quote.delta)
             else:
-                metric_by_strike[candidate] = (bid + ask) / Decimal("2")
+                metric_by_strike[strike] = (bid + ask) / Decimal("2")
         return choose_strike_by_target_range(
             chain,
             spot=spot,
