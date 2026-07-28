@@ -1213,8 +1213,28 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 // app. requestId MUST be supplied by the caller (never generated here) so a
 // retry can actually reuse it; see POST /api/trades/:correlationId/close.
 async function submitCloseIntent({ entryCorrelationId, mode, quantity, requestId }) {
-  if (MODE !== 'paper_tws' || !coreSnapshot.ready || CORE_TOKEN.length < 32) {
-    return { status: 'BLOCKED', code: 'MANUAL_EXECUTION_UNAVAILABLE' };
+  // Every block below this point (once store.receive() has run) is already
+  // durable via TradingViewStore's own alert ledger. The three paths that
+  // can block *before* store.receive() ever gets a chance to persist
+  // anything are not -- without this, a blocked FLATTEN/PARTIAL CLOSE left
+  // no trace anywhere once the operator's browser session ended, unlike
+  // every other broker-facing outcome in this app. blockedHere() closes that
+  // gap and forwards the *real* reason instead of a generic catch-all code.
+  const blockedHere = (code) => {
+    operatorStore.recordManualActionBlock({ action: mode, code, entryCorrelationId, requestId });
+    return { status: 'BLOCKED', code };
+  };
+  if (MODE !== 'paper_tws') {
+    return blockedHere('MANUAL_EXECUTION_UNAVAILABLE');
+  }
+  if (CORE_TOKEN.length < 32) {
+    return blockedHere('TWS_CORE_TOKEN_NOT_CONFIGURED');
+  }
+  if (!coreSnapshot.ready) {
+    // Forward the core's own readiness reason (e.g. IBKR_NOT_READY,
+    // RECONCILIATION_REQUIRED, ACCOUNT_MISMATCH) rather than collapsing
+    // every readiness failure into the same opaque code.
+    return blockedHere(coreSnapshot.reason || 'TWS_CORE_NOT_READY');
   }
 
   // A retried requestId (the operator's own action, or a network retry that
@@ -1239,7 +1259,7 @@ async function submitCloseIntent({ entryCorrelationId, mode, quantity, requestId
   const alert = lookupOriginatingAlert(entryCorrelationId);
   const right = rightFromOpenAction(alert);
   if (!alert || !right || typeof alert.payload?.ticker !== 'string') {
-    return { status: 'BLOCKED', code: 'ENTRY_REFERENCE_NOT_FOUND' };
+    return blockedHere('ENTRY_REFERENCE_NOT_FOUND');
   }
 
   const signal = {
@@ -1273,7 +1293,7 @@ async function submitCloseIntent({ entryCorrelationId, mode, quantity, requestId
     });
   } catch (error) {
     if (error instanceof DedupeConflictError) {
-      return { status: 'BLOCKED', code: 'CLOSE_REQUEST_PAYLOAD_CONFLICT' };
+      return blockedHere('CLOSE_REQUEST_PAYLOAD_CONFLICT');
     }
     throw error;
   }
@@ -1559,6 +1579,13 @@ async function route(req, res) {
 
   if (url.pathname === '/api/management/defaults' && req.method === 'GET') {
     return json(res, 200, operatorStore.managementDefaults());
+  }
+
+  // Durable audit trail for manual close/flatten attempts blocked before
+  // TradingViewStore's own alert ledger ever saw them -- see
+  // manual_action_blocks / submitCloseIntent's blockedHere().
+  if (url.pathname === '/api/manual-action-blocks' && req.method === 'GET') {
+    return json(res, 200, { items: operatorStore.listManualActionBlocks() });
   }
 
   if (url.pathname === '/api/management/defaults' && req.method === 'PUT') {

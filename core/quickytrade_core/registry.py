@@ -101,6 +101,15 @@ class SubmissionRegistry:
             "UPDATE broker_submissions SET status='SUBMISSION_UNKNOWN', updated_at=? WHERE status='SUBMITTING'",
             (now,),
         )
+        # A cancel_order() call (see record_entry_cancel_intent) that crashed
+        # mid-flight is exactly as ambiguous as an initial-placement
+        # SUBMITTING row -- same restart-recovery sweep, mirrored from
+        # ProtectionLedger's own cancel_status handling.
+        self._db.execute(
+            "UPDATE broker_submissions SET entry_cancel_status='CANCEL_UNKNOWN', updated_at=? "
+            "WHERE entry_cancel_status='CANCELLING'",
+            (now,),
+        )
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -354,26 +363,31 @@ class SubmissionRegistry:
         with self._lock:
             row = self._db.execute(
                 """SELECT 1 FROM broker_submissions
-                   WHERE status='SUBMISSION_UNKNOWN' AND reconciliation_outcome IS NULL
-                     AND (action IS NULL OR substr(action, 1, 6) != 'CLOSE_')
+                   WHERE (status='SUBMISSION_UNKNOWN' AND reconciliation_outcome IS NULL
+                          AND (action IS NULL OR substr(action, 1, 6) != 'CLOSE_'))
+                      OR entry_cancel_status='CANCEL_UNKNOWN'
                    LIMIT 1"""
             ).fetchone()
         return row is not None
 
-    def has_blocking_open(self, account: str, symbol: str, right: str) -> bool:
-        # A SUBMISSION_UNKNOWN row resolved to CONFIRMED_NO_FILL never became a
-        # broker position or working order, so it must stop reserving this
-        # symbol/right for future entries. CONFIRMED_FILLED (or still-
-        # unresolved, reconciliation_outcome IS NULL) keeps blocking, exactly
-        # as an unconditional SUBMISSION_UNKNOWN did before reconciliation
-        # existed. Fully CLOSED position_state rows no longer reserve the symbol/right.
+    def blocking_open_entries(self, account: str, symbol: str, right: str) -> list[dict[str, Any]]:
+        """The row detail behind has_blocking_open(): every currently-
+        blocking prior OPEN submission for this exact account/symbol/right,
+        with enough evidence (correlation_id, order_ref, created_at) for
+        ExecutionEngine._cancel_stale_blocking_entry to decide whether it is
+        stale and locate its broker order. A row whose stale-entry cancel
+        has already been broker-confirmed (entry_cancel_status=
+        'CANCEL_CONFIRMED') no longer reserves the symbol/right -- see
+        record_entry_cancel_intent/finish_entry_cancel_confirmed below."""
         with self._lock:
             try:
                 rows = self._db.execute(
-                    """SELECT s.action, s.contract_json, p.lifecycle_status
+                    """SELECT s.correlation_id, s.action, s.contract_json, s.order_ref, s.created_at,
+                              p.lifecycle_status
                        FROM broker_submissions s
                        LEFT JOIN position_state p ON p.correlation_id = s.correlation_id
                        WHERE s.account=? AND s.action IN ('OPEN_LONG_CALL','OPEN_LONG_PUT')
+                         AND (s.entry_cancel_status IS NULL OR s.entry_cancel_status != 'CANCEL_CONFIRMED')
                          AND (
                            s.status='SUBMITTED'
                            OR (s.status='SUBMISSION_UNKNOWN'
@@ -383,8 +397,11 @@ class SubmissionRegistry:
                 ).fetchall()
             except sqlite3.OperationalError:
                 rows = self._db.execute(
-                    """SELECT action, contract_json, NULL AS lifecycle_status FROM broker_submissions
+                    """SELECT correlation_id, action, contract_json, order_ref, created_at,
+                              NULL AS lifecycle_status
+                       FROM broker_submissions
                        WHERE account=? AND action IN ('OPEN_LONG_CALL','OPEN_LONG_PUT')
+                         AND (entry_cancel_status IS NULL OR entry_cancel_status != 'CANCEL_CONFIRMED')
                          AND (
                            status='SUBMITTED'
                            OR (status='SUBMISSION_UNKNOWN'
@@ -393,13 +410,79 @@ class SubmissionRegistry:
                     (account,),
                 ).fetchall()
         expected_action = "OPEN_LONG_CALL" if right == "C" else "OPEN_LONG_PUT"
+        matches: list[dict[str, Any]] = []
         for row in rows:
             if row["lifecycle_status"] == "CLOSED":
                 continue
             contract = _json(row["contract_json"])
             if row["action"] == expected_action and contract and contract.get("symbol") == symbol:
-                return True
-        return False
+                matches.append(
+                    {
+                        "correlation_id": row["correlation_id"],
+                        "order_ref": row["order_ref"],
+                        "created_at": row["created_at"],
+                    }
+                )
+        return matches
+
+    def has_blocking_open(self, account: str, symbol: str, right: str) -> bool:
+        # A SUBMISSION_UNKNOWN row resolved to CONFIRMED_NO_FILL never became a
+        # broker position or working order, so it must stop reserving this
+        # symbol/right for future entries. CONFIRMED_FILLED (or still-
+        # unresolved, reconciliation_outcome IS NULL) keeps blocking, exactly
+        # as an unconditional SUBMISSION_UNKNOWN did before reconciliation
+        # existed. Fully CLOSED position_state rows no longer reserve the symbol/right.
+        return bool(self.blocking_open_entries(account, symbol, right))
+
+    # ---- stale-entry cancellation (mirrors ProtectionLedger's cancel_status
+    # discipline exactly): durable cancel-intent evidence before any
+    # cancel_order() broker call, and a stuck 'CANCELLING' row is swept to
+    # 'CANCEL_UNKNOWN' on the next restart (see __init__). Only ever invoked
+    # on-demand by ExecutionEngine._cancel_stale_blocking_entry, at the exact
+    # moment a genuinely stale (past the signal-age TTL) prior entry would
+    # otherwise block a brand-new one -- never a proactive background sweep.
+
+    def record_entry_cancel_intent(self, correlation_id: str) -> None:
+        with self._lock:
+            changed = self._db.execute(
+                """UPDATE broker_submissions
+                   SET entry_cancel_status='CANCELLING', updated_at=?
+                   WHERE correlation_id=? AND status='SUBMITTED' AND entry_cancel_status IS NULL""",
+                (_now(), correlation_id),
+            )
+        if changed.rowcount != 1:
+            raise RuntimeError("Entry submission is not available for cancel-intent evidence")
+
+    def finish_entry_cancel_confirmed(self, correlation_id: str) -> None:
+        """A proven broker cancellation: this entry no longer reserves its
+        symbol/right (see blocking_open_entries). `status` is deliberately
+        left at 'SUBMITTED' -- it still truthfully records that an order was
+        once placed; entry_cancel_status is the separate record of its final
+        broker-confirmed fate."""
+        with self._lock:
+            changed = self._db.execute(
+                """UPDATE broker_submissions SET entry_cancel_status='CANCEL_CONFIRMED', updated_at=?
+                   WHERE correlation_id=? AND entry_cancel_status='CANCELLING'""",
+                (_now(), correlation_id),
+            )
+        if changed.rowcount != 1:
+            raise RuntimeError("Entry submission is not in a CANCELLING state")
+
+    def finish_entry_cancel_unknown(self, correlation_id: str) -> None:
+        """An ambiguous/timed-out cancel outcome on the entry order itself --
+        exactly as unresolved as an initial-placement SUBMISSION_UNKNOWN
+        (unlike a close/flatten protection-leg cancel, this can mean an
+        unknown *new* position now exists, so it globally blocks every new
+        order via has_unresolved_unknown() above, not just this symbol/
+        right). Never automatically retried."""
+        with self._lock:
+            changed = self._db.execute(
+                """UPDATE broker_submissions SET entry_cancel_status='CANCEL_UNKNOWN', updated_at=?
+                   WHERE correlation_id=? AND entry_cancel_status='CANCELLING'""",
+                (_now(), correlation_id),
+            )
+        if changed.rowcount != 1:
+            raise RuntimeError("Entry submission is not in a CANCELLING state")
 
     def has_blocking_close(self, account: str, con_id: int) -> bool:
         """Primarily an idempotency/double-click and crash-restart guard for
@@ -472,6 +555,7 @@ class SubmissionRegistry:
             "limit_price",
             "order_ref",
             "reconciled_at",
+            "entry_cancel_status",
         ):
             if name not in columns:
                 self._db.execute(f"ALTER TABLE broker_submissions ADD COLUMN {name} TEXT")

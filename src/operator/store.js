@@ -76,6 +76,24 @@ CREATE TABLE IF NOT EXISTS manual_trade_intents (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- Durable record of a manual close/flatten request blocked before it ever
+-- reached TradingViewStore's own durable alert ledger (submitCloseIntent's
+-- pre-flight MODE/CORE_TOKEN/coreSnapshot.ready gate, and its
+-- ENTRY_REFERENCE_NOT_FOUND / CLOSE_REQUEST_PAYLOAD_CONFLICT checks that run
+-- before store.receive()). Every later block in that same flow is already
+-- durable via store.receive()/finishSubmission() -- this table exists solely
+-- to close the gap for the three paths that were previously unpersisted:
+-- "was flatten blocked and why" must be answerable after the fact, exactly
+-- like every other broker-facing outcome in this app.
+CREATE TABLE IF NOT EXISTS manual_action_blocks (
+  id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  code TEXT NOT NULL,
+  entry_correlation_id TEXT,
+  request_id TEXT,
+  created_at TEXT NOT NULL
+);
 `;
 
 function nowIso() {
@@ -428,5 +446,32 @@ export class OperatorStore {
       status: row.status,
       createdAt: row.created_at,
     };
+  }
+
+  // See the manual_action_blocks table comment above: this durably records a
+  // manual close/flatten block from the one part of submitCloseIntent's flow
+  // that runs before store.receive() ever gets a chance to persist anything.
+  recordManualActionBlock({ action, code, entryCorrelationId = null, requestId = null }) {
+    const id = randomUUID();
+    const timestamp = nowIso();
+    this.db.prepare(`
+      INSERT INTO manual_action_blocks (id,action,code,entry_correlation_id,request_id,created_at)
+      VALUES (?,?,?,?,?,?)
+    `).run(id, action, code, entryCorrelationId, requestId, timestamp);
+    return { id, action, code, entryCorrelationId, requestId, createdAt: timestamp };
+  }
+
+  listManualActionBlocks(limit = 50) {
+    return this.db.prepare(`
+      SELECT id, action, code, entry_correlation_id, request_id, created_at
+      FROM manual_action_blocks ORDER BY created_at DESC LIMIT ?
+    `).all(limit).map((row) => ({
+      id: row.id,
+      action: row.action,
+      code: row.code,
+      entryCorrelationId: row.entry_correlation_id,
+      requestId: row.request_id,
+      createdAt: row.created_at,
+    }));
   }
 }

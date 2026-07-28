@@ -51,6 +51,17 @@ const state = {
   // status and updated timestamp so a later state/version automatically
   // resurfaces. This never mutates the durable alert, timeline, or broker.
   attentionAcknowledgements: new Set(),
+  // The Active Positions table re-renders on a 3s poll (renderActiveTrades
+  // rebuilds every <tr> from scratch every cycle). A brand-new qty <input>
+  // element on every rebuild silently discards whatever the operator is
+  // mid-typing into PARTIAL CLOSE's quantity field -- keyed here by
+  // correlationId so buildActiveTradeRow can reuse the *same* input element
+  // across renders (moving an element to a new parent via appendChild
+  // preserves its value and focus; recreating it does not). Only the input
+  // itself needs this -- the PARTIAL CLOSE/FLATTEN buttons are safely
+  // recreated every render since their click handlers just need to close
+  // over the current trade, not preserve any operator-typed state.
+  qtyInputsByTrade: new Map(),
 };
 const $ = (selector) => document.querySelector(selector);
 
@@ -594,12 +605,23 @@ function buildActiveTradeRow(trade) {
 
   const actionsCell = element('td');
   const actionsWrap = element('div', undefined, 'row-actions');
-  const qtyInput = element('input');
-  qtyInput.type = 'number';
-  qtyInput.min = '1';
-  qtyInput.step = '1';
-  qtyInput.className = 'control qty-input';
-  qtyInput.placeholder = 'Qty';
+  // Reuse the same qty <input> element across renders (see
+  // state.qtyInputsByTrade) so an in-progress PARTIAL CLOSE quantity never
+  // vanishes on the next 3s poll -- only ever set up once per trade; its
+  // value is never touched again here, since there is no "server value" to
+  // reconcile against (unlike setValuePreservingEdits' settings inputs).
+  const correlationId = trade.correlationId || '';
+  let qtyInput = state.qtyInputsByTrade.get(correlationId);
+  if (!qtyInput) {
+    qtyInput = element('input');
+    qtyInput.type = 'number';
+    qtyInput.min = '1';
+    qtyInput.step = '1';
+    qtyInput.className = 'control qty-input';
+    qtyInput.placeholder = 'Qty';
+    qtyInput.dataset.correlationId = correlationId;
+    state.qtyInputsByTrade.set(correlationId, qtyInput);
+  }
   if (trade.quantity?.open) qtyInput.max = trade.quantity.open;
   const partialButton = element('button', 'PARTIAL CLOSE', 'secondary');
   partialButton.type = 'button';
@@ -667,7 +689,24 @@ function hasWorkingProtection(trade) {
 
 function renderActiveTrades() {
   const rows = $('#activeTradeRows');
+  // clear(rows) below fully detaches every row (and the qty input inside
+  // it) from the document -- a detached element cannot hold focus, so even
+  // though buildActiveTradeRow reuses the same input object, the browser
+  // still blurs it mid-render. Capture what the operator was doing before
+  // that happens so it can be restored once the (possibly reused) input is
+  // back in the document -- see the restore below.
+  const focusedQtyInput = document.activeElement?.classList?.contains('qty-input') ? document.activeElement : null;
+  const focusedCorrelationId = focusedQtyInput?.dataset.correlationId ?? null;
+  const focusedSelectionStart = focusedQtyInput?.selectionStart ?? null;
+  const focusedSelectionEnd = focusedQtyInput?.selectionEnd ?? null;
   clear(rows);
+  // Drop any reusable qty-input entries for trades that are no longer active
+  // (closed, or positions currently unavailable) -- otherwise
+  // state.qtyInputsByTrade grows unboundedly across a long session.
+  const activeCorrelationIds = new Set(state.activeTrades.map((trade) => trade.correlationId || ''));
+  for (const correlationId of state.qtyInputsByTrade.keys()) {
+    if (!activeCorrelationIds.has(correlationId)) state.qtyInputsByTrade.delete(correlationId);
+  }
   const status = state.positionsStatus || 'CHECKING';
   const confirmed = status === 'OK';
   const statusPill = $('#positionsStatusPill');
@@ -712,6 +751,21 @@ function renderActiveTrades() {
   }
   for (const trade of state.activeTrades) {
     rows.append(buildActiveTradeRow(trade));
+  }
+  if (focusedCorrelationId) {
+    const restored = state.qtyInputsByTrade.get(focusedCorrelationId);
+    if (restored) {
+      restored.focus();
+      if (focusedSelectionStart !== null) {
+        // type="number" inputs reject setSelectionRange in some browsers --
+        // losing cursor position is harmless, losing focus/value is not.
+        try {
+          restored.setSelectionRange(focusedSelectionStart, focusedSelectionEnd);
+        } catch {
+          // ignored -- see comment above.
+        }
+      }
+    }
   }
   const selected = (state.selectedTradeCorrelationId
     && state.activeTrades.find((item) => item.correlationId === state.selectedTradeCorrelationId))

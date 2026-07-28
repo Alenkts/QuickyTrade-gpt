@@ -17,6 +17,7 @@ from quickytrade_core.domain import (
     BrokerAcknowledgement,
     BrokerAmbiguousError,
     BrokerDefinitiveError,
+    CancelAcknowledgement,
     OptionChain,
     Position,
     PriceIncrement,
@@ -88,6 +89,8 @@ class FakeTransport:
         self.order_rows: list[WorkingOrder] = []
         self.placed = []
         self.place_result: object = BrokerAcknowledgement(700, 71, 900, "PreSubmitted")
+        self.cancelled: list[int] = []
+        self.cancel_results: dict[int, object] = {}  # order_id -> Exception instance, else confirmed success.
 
     def start(self): pass
     def stop(self): pass
@@ -129,6 +132,13 @@ class FakeTransport:
         if isinstance(self.place_result, Exception):
             raise self.place_result
         return self.place_result
+
+    def cancel_order(self, order_id):
+        self.cancelled.append(order_id)
+        result = self.cancel_results.get(order_id)
+        if isinstance(result, Exception):
+            raise result
+        return result if result is not None else CancelAcknowledgement(order_id, "Cancelled")
 
 
 def open_request(alert="tv-open-1", *, action="OPEN_LONG_CALL", offset=1):
@@ -654,6 +664,117 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual("BLOCKED", second.status)
         self.assertEqual("LOCAL_EXPOSURE_UNRESOLVED", second.body["code"])
         self.assertEqual(1, len(self.transport.placed))
+        # A still-fresh blocking entry is never auto-cancelled.
+        self.assertEqual([], self.transport.cancelled)
+
+    # ---- stale blocking entry auto-cancel (on-demand only, at the exact
+    # moment a new entry would otherwise be blocked by it -- never a
+    # background sweep; see ExecutionEngine._cancel_stale_blocking_entry) ----
+
+    def test_stale_blocking_entry_is_auto_cancelled_and_the_new_entry_proceeds(self):
+        first = self.engine.execute(open_request("tv-stale-1"))
+        self.assertEqual("SUBMITTED", first.status)
+        blocking = self.registry.blocking_open_entries("DU12345", "QQQ", "C")
+        self.assertEqual(1, len(blocking))
+        order_ref = blocking[0]["order_ref"]
+        stale_order_id = 9001
+        self.transport.order_rows = [WorkingOrder(
+            account="DU12345", contract=option(), action="BUY", remaining=Decimal("1"),
+            order_id=stale_order_id, client_id=71, perm_id=91001, order_ref=order_ref, raw_status="Submitted",
+        )]
+        # created_at is stamped from the registry's own real wall clock, not
+        # the engine's injectable test clock -- pin it to the fictional NOW
+        # directly so "stale relative to `later`" is well-defined here.
+        self.registry.connection.execute(
+            "UPDATE broker_submissions SET created_at=? WHERE correlation_id=?",
+            (NOW.isoformat(), "tradingview:tv-stale-1"),
+        )
+        later = NOW + timedelta(minutes=6)  # past the 5-minute default max_signal_age.
+        self.engine.clock = lambda: later
+        self.transport.underlying_quote = Quote(Decimal("100.20"), Decimal("100.30"), later, "LIVE")
+        self.transport.option_quote = Quote(Decimal("1.00"), Decimal("1.03"), later, "LIVE")
+        second_request = open_request("tv-stale-2")
+        second_request["signal"]["sent_at"] = later.isoformat()
+        self.transport.place_result = BrokerAcknowledgement(701, 71, 901, "PreSubmitted")
+        result = self.engine.execute(second_request)
+        self.assertEqual("SUBMITTED", result.status)
+        self.assertEqual([stale_order_id], self.transport.cancelled)
+        self.assertEqual(2, len(self.transport.placed))
+        # The cancelled entry no longer reserves the symbol/right at all --
+        # only the brand-new one does.
+        remaining = self.registry.blocking_open_entries("DU12345", "QQQ", "C")
+        self.assertEqual(1, len(remaining))
+        self.assertNotEqual("tradingview:tv-stale-1", remaining[0]["correlation_id"])
+
+    def test_stale_blocking_entry_not_resting_at_the_broker_still_blocks(self):
+        first = self.engine.execute(open_request("tv-gone-1"))
+        self.assertEqual("SUBMITTED", first.status)
+        # transport.order_rows stays empty: the stale order is no longer
+        # resting at the broker (already filled or independently cancelled),
+        # so nothing safe to cancel -- must not fabricate an outcome.
+        later = NOW + timedelta(minutes=6)
+        self.engine.clock = lambda: later
+        self.transport.underlying_quote = Quote(Decimal("100.20"), Decimal("100.30"), later, "LIVE")
+        self.transport.option_quote = Quote(Decimal("1.00"), Decimal("1.03"), later, "LIVE")
+        second_request = open_request("tv-gone-2")
+        second_request["signal"]["sent_at"] = later.isoformat()
+        result = self.engine.execute(second_request)
+        self.assertEqual("BLOCKED", result.status)
+        self.assertEqual("LOCAL_EXPOSURE_UNRESOLVED", result.body["code"])
+        self.assertEqual([], self.transport.cancelled)
+        self.assertEqual(1, len(self.transport.placed))
+
+    def test_stale_blocking_entry_cancel_ambiguous_blocks_every_new_order_globally(self):
+        first = self.engine.execute(open_request("tv-ambig-1"))
+        self.assertEqual("SUBMITTED", first.status)
+        blocking = self.registry.blocking_open_entries("DU12345", "QQQ", "C")
+        order_ref = blocking[0]["order_ref"]
+        stale_order_id = 9002
+        self.transport.order_rows = [WorkingOrder(
+            account="DU12345", contract=option(), action="BUY", remaining=Decimal("1"),
+            order_id=stale_order_id, client_id=71, perm_id=91002, order_ref=order_ref, raw_status="Submitted",
+        )]
+        self.registry.connection.execute(
+            "UPDATE broker_submissions SET created_at=? WHERE correlation_id=?",
+            (NOW.isoformat(), "tradingview:tv-ambig-1"),
+        )
+        self.transport.cancel_results[stale_order_id] = BrokerAmbiguousError("IBKR_CANCEL_ACK_TIMEOUT", "timeout")
+        later = NOW + timedelta(minutes=6)
+        self.engine.clock = lambda: later
+        self.transport.underlying_quote = Quote(Decimal("100.20"), Decimal("100.30"), later, "LIVE")
+        self.transport.option_quote = Quote(Decimal("1.00"), Decimal("1.03"), later, "LIVE")
+        second_request = open_request("tv-ambig-2")
+        second_request["signal"]["sent_at"] = later.isoformat()
+        result = self.engine.execute(second_request)
+        self.assertEqual("BLOCKED", result.status)
+        self.assertEqual("STALE_ENTRY_CANCEL_UNKNOWN", result.body["code"])
+        self.assertEqual([stale_order_id], self.transport.cancelled)
+        self.assertTrue(self.registry.has_unresolved_unknown())
+        # A brand-new, wholly unrelated symbol/right is now globally blocked
+        # too -- an ambiguous entry cancel can mean an unknown new position
+        # now exists, so (unlike a close/flatten protection-leg cancel) it is
+        # never scoped to just this one contract.
+        third_request = open_request("tv-ambig-3", action="OPEN_LONG_PUT")
+        third_request["signal"]["sent_at"] = later.isoformat()
+        third = self.engine.execute(third_request)
+        self.assertEqual("BLOCKED", third.status)
+        self.assertEqual("UNRESOLVED_SUBMISSION", third.body["code"])
+
+    def test_restart_sweep_resolves_a_stuck_entry_cancel_intent(self):
+        first = self.engine.execute(open_request("tv-restart-cancel"))
+        self.assertEqual("SUBMITTED", first.status)
+        registry_key = "tradingview:tv-restart-cancel"
+        self.registry.record_entry_cancel_intent(registry_key)
+        # Simulate a crash: 'CANCELLING' evidence is durable, but no broker
+        # outcome was ever recorded.
+        self.registry.close()
+        restarted = SubmissionRegistry(self.config.state_db_path)
+        # Fail closed both ways, identical to an initial-placement
+        # SUBMISSION_UNKNOWN: still reserves the symbol/right, and now
+        # globally blocks every new order until reconciled.
+        self.assertTrue(restarted.has_blocking_open("DU12345", "QQQ", "C"))
+        self.assertTrue(restarted.has_unresolved_unknown())
+        self.registry = restarted  # tearDown closes whichever registry is current.
 
     def test_concurrent_distinct_entries_serialize_to_one_broker_call(self):
         barrier = threading.Barrier(3)

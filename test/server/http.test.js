@@ -46,6 +46,8 @@ function createFakeCore() {
   const state = {
     closeBehavior: 'SUBMITTED',
     closeCallCount: 0,
+    healthzReady: true,
+    healthzCode: null,
     positionsItems: [],
     positionsBehavior: 'OK',
     reconciliationUnresolved: {
@@ -75,8 +77,9 @@ function createFakeCore() {
 
       if (url.pathname === '/healthz' && req.method === 'GET') {
         return send(200, {
-          ready: true, environment: 'PAPER', accountMask: '•••1234',
+          ready: state.healthzReady, environment: 'PAPER', accountMask: '•••1234',
           ibkrHost: '127.0.0.1', ibkrPort: 7497, strikeSelection: null,
+          ...(state.healthzReady ? {} : { code: state.healthzCode }),
         });
       }
       if (url.pathname === '/private/v1/preview-trade' && req.method === 'POST') {
@@ -230,6 +233,7 @@ test('public ingress listener still exposes only /healthz and /webhooks/tradingv
     ['/api/reconciliation', 'GET'],
     ['/api/tradingview/runtime', 'GET'],
     ['/api/connection-profiles', 'GET'],
+    ['/api/manual-action-blocks', 'GET'],
   ]) {
     const response = await fetch(`${ingressBase}${path}`, { method });
     assert.equal(response.status, 404, `expected ${method} ${path} to 404 on the public ingress listener`);
@@ -365,6 +369,55 @@ test('close endpoint fails closed with ENTRY_REFERENCE_NOT_FOUND for an unrecogn
   assert.equal(body.submission.status, 'BLOCKED');
   assert.equal(body.submission.code, 'ENTRY_REFERENCE_NOT_FOUND');
   assert.equal(fakeCore.state.closeCallCount, before_);
+});
+
+// ---- durable audit trail for blocks that predate store.receive() ---------
+
+test('a close/flatten block that happens before store.receive() is durably recorded and readable back', async () => {
+  const requestId = randomUUID();
+  const response = await fetch(`${base}/api/trades/${encodeURIComponent('manual:does-not-exist-2')}/close`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'FULL_FLATTEN', requestId }),
+  });
+  assert.equal(response.status, 202);
+  const body = await response.json();
+  assert.equal(body.submission.code, 'ENTRY_REFERENCE_NOT_FOUND');
+
+  const blocksResponse = await fetch(`${base}/api/manual-action-blocks`);
+  assert.equal(blocksResponse.status, 200);
+  const blocksBody = await blocksResponse.json();
+  const recorded = blocksBody.items.find((item) => item.requestId === requestId);
+  assert.ok(recorded, 'expected the block to be durably recorded and retrievable');
+  assert.equal(recorded.action, 'FULL_FLATTEN');
+  assert.equal(recorded.code, 'ENTRY_REFERENCE_NOT_FOUND');
+  assert.equal(recorded.entryCorrelationId, 'manual:does-not-exist-2');
+});
+
+test('a flatten blocked by core unreadiness forwards the real reason, not a generic catch-all, and is durably recorded', async () => {
+  fakeCore.state.healthzReady = false;
+  fakeCore.state.healthzCode = 'RECONCILIATION_REQUIRED';
+  await fetch(`${base}/api/tradingview/runtime?refresh=1`); // force coreSnapshot to re-poll immediately.
+
+  const requestId = randomUUID();
+  const response = await fetch(`${base}/api/trades/${encodeURIComponent('manual:whatever')}/close`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'FULL_FLATTEN', requestId }),
+  });
+  assert.equal(response.status, 202);
+  const body = await response.json();
+  assert.equal(body.submission.status, 'BLOCKED');
+  assert.equal(body.submission.code, 'RECONCILIATION_REQUIRED');
+  assert.notEqual(body.submission.code, 'MANUAL_EXECUTION_UNAVAILABLE');
+
+  const blocksResponse = await fetch(`${base}/api/manual-action-blocks`);
+  const blocksBody = await blocksResponse.json();
+  const recorded = blocksBody.items.find((item) => item.requestId === requestId);
+  assert.ok(recorded, 'expected the readiness block to be durably recorded and retrievable');
+  assert.equal(recorded.code, 'RECONCILIATION_REQUIRED');
+
+  fakeCore.state.healthzReady = true;
+  fakeCore.state.healthzCode = null;
+  await fetch(`${base}/api/tradingview/runtime?refresh=1`); // restore for later tests.
 });
 
 // ---- BLOCKED/ambiguous mapping and idempotency, against a real seeded entry ---

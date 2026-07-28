@@ -985,6 +985,13 @@ class ExecutionEngine:
     def _block_duplicate_exposure(self, symbol: str, right: str) -> None:
         account = self.config.selected_account
         if self.registry.has_blocking_open(account, symbol, right):
+            if self._cancel_stale_blocking_entry(account, symbol, right):
+                # The stale prior entry is now broker-confirmed cancelled and
+                # no longer reserves this symbol/right -- this submission
+                # proceeds as a genuinely new entry, not a retry of the old
+                # one. Nothing about the contract/quote/pricing below depends
+                # on the now-cancelled order.
+                return
             raise ExecutionBlocked(
                 "LOCAL_EXPOSURE_UNRESOLVED",
                 "A prior submitted or unknown local entry still reserves this account/underlying/direction",
@@ -1004,6 +1011,80 @@ class ExecutionEngine:
                 continue
             if order.action.upper() == "BUY" and (order.remaining is None or order.remaining > 0):
                 raise ExecutionBlocked("WORKING_ENTRY_EXISTS", "A matching working IBKR entry already exists")
+
+    def _cancel_stale_blocking_entry(self, account: str, symbol: str, right: str) -> bool:
+        """Auto-cancel a prior entry order blocking a new one via
+        has_blocking_open(), but only when it is genuinely stale -- resting
+        unfilled longer than the signal-age TTL this app would itself reject
+        a fresh signal for (the same threshold stale_working_entries() uses
+        to merely *surface* the condition). On-demand only: this is never
+        invoked by the periodic sweep, only here, at the exact moment a new
+        entry attempt is actually blocked by it -- see AGENTS.md and
+        stale_working_entries()'s own docstring on why unattended background
+        cancellation of a resting entry is deliberately out of scope.
+
+        Returns True only once the cancellation is broker-confirmed (the
+        caller may then let this exact submission proceed). Returns False
+        -- leaving the existing LOCAL_EXPOSURE_UNRESOLVED block entirely
+        untouched -- for a still-fresh blocking entry, or one no longer
+        found resting at the broker (already filled or independently
+        cancelled; nothing safe to do here, and the block itself will
+        reflect current broker truth on the next reconciliation pass).
+
+        An ambiguous cancel outcome (the fill-vs-cancel race
+        cancel_order() itself is documented to fail closed on) is not
+        silently swallowed back into the ordinary duplicate-exposure block:
+        it raises its own distinct, globally-blocking code, since -- unlike
+        a close/flatten protection-leg cancel -- it can mean an unknown new
+        position now exists.
+        """
+        blocking = self.registry.blocking_open_entries(account, symbol, right)
+        if not blocking:
+            return False
+        ttl_seconds = self.config.max_signal_age.total_seconds()
+        now = self._now()
+        for entry in blocking:
+            created_at = entry.get("created_at")
+            if not created_at:
+                continue
+            try:
+                age = (now - datetime.fromisoformat(created_at)).total_seconds()
+            except (TypeError, ValueError):
+                continue
+            if age <= ttl_seconds:
+                continue  # still fresh -- a legitimate reservation, not a candidate.
+            order_ref = entry.get("order_ref")
+            if not order_ref:
+                continue
+            broker_order_id = None
+            for order in self.transport.working_orders(account):
+                if order.order_ref == order_ref:
+                    broker_order_id = order.order_id
+                    break
+            if broker_order_id is None:
+                continue  # not actually resting at the broker anymore -- nothing to cancel.
+            correlation_id = entry["correlation_id"]
+            self.registry.record_entry_cancel_intent(correlation_id)
+            try:
+                self.transport.cancel_order(broker_order_id)
+            except BrokerAmbiguousError:
+                self.registry.finish_entry_cancel_unknown(correlation_id)
+                raise ExecutionBlocked(
+                    "STALE_ENTRY_CANCEL_UNKNOWN",
+                    f"Cancelling stale blocking entry {correlation_id} is ambiguous; "
+                    "every new order is blocked until reconciled",
+                )
+            except Exception:
+                logger.exception("Unexpected error while cancelling stale blocking entry %s", correlation_id)
+                self.registry.finish_entry_cancel_unknown(correlation_id)
+                raise ExecutionBlocked(
+                    "STALE_ENTRY_CANCEL_UNKNOWN",
+                    f"Cancelling stale blocking entry {correlation_id} is ambiguous; "
+                    "every new order is blocked until reconciled",
+                )
+            self.registry.finish_entry_cancel_confirmed(correlation_id)
+            return True
+        return False
 
     def _choose_target_range_strike(
         self,

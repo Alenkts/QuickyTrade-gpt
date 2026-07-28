@@ -30,7 +30,7 @@ To expose the ingress for TradingView's cloud alert servers to actually reach
 (TradingView cannot call `127.0.0.1` on your machine), tunnel just that port:
 
 ```bash
-ngrok http 4180
+  ngrok http 4180
 ```
 
 Use the `https://` forwarding URL ngrok prints, with the path appended:
